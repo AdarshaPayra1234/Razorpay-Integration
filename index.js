@@ -65,14 +65,14 @@ app.post('/create-order', (req, res) => {
 
 // Email Transporter Setup
 const transporter = nodemailer.createTransport({
-    service: 'gmail',  // Gmail service
-    auth: {
-        user: process.env.EMAIL_USER,  // Your Gmail address (from .env)
-        pass: process.env.EMAIL_PASS,  // Your Gmail password (or App password)
-    },
-    tls: {
-        rejectUnauthorized: false  // Allow non-SSL email servers (sometimes required with Gmail)
-    }
+  service: 'gmail',  // Gmail service
+  auth: {
+    user: process.env.EMAIL_USER,  // Your Gmail address (from .env)
+    pass: process.env.EMAIL_PASS,  // Your Gmail password (or App password)
+  },
+  tls: {
+    rejectUnauthorized: false  // Allow non-SSL email servers (sometimes required with Gmail)
+  }
 });
 
 // Endpoint to save booking details and send confirmation email
@@ -177,26 +177,28 @@ app.post('/save-booking', (req, res) => {
     });
 });
 
+// Contact form submission
 app.post('/contact-submit', (req, res) => {
   const { name, mobile, email } = req.body;
 
-   const mailOptions = {
-        from: process.env.EMAIL_USER,  // Sender's email address
-        to: process.env.EMAIL_TO,      // Your email address (recipient)
-        subject: 'New Contact Form Submission',  // Email subject
-        text: `Name: ${name}\nMobile: ${mobile}\nEmail: ${email}`, // Email body content
-    };
+  const mailOptions = {
+    from: process.env.EMAIL_USER,  // Sender's email address
+    to: process.env.EMAIL_TO,      // Your email address (recipient)
+    subject: 'New Contact Form Submission',  // Email subject
+    text: `Name: ${name}\nMobile: ${mobile}\nEmail: ${email}`, // Email body content
+  };
 
-   transporter.sendMail(mailOptions, (error, info) => {
-        if (error) {
-            console.log('Error sending email:', error);
-            return res.status(500).json({ error: 'Failed to send email' });
-        }
-        console.log('Email sent:', info.response);
-        return res.status(200).json({ message: 'Your message has been sent successfully!' });
-    });
+  transporter.sendMail(mailOptions, (error, info) => {
+    if (error) {
+      console.log('Error sending email:', error);
+      return res.status(500).json({ error: 'Failed to send email' });
+    }
+    console.log('Email sent:', info.response);
+    return res.status(200).json({ message: 'Your message has been sent successfully!' });
+  });
 });
 
+// Serve static files (e.g., images, CSS, JS)
 app.use(express.static('public'));
 
 // Start server
