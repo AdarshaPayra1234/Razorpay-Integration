@@ -179,7 +179,9 @@ app.post('/save-booking', (req, res) => {
 
 // Contact form handler for sending email
 app.post('/contact-submit', (req, res) => {
-  const { name, mobile, email } = req.body;
+    // Handle the request here, e.g., send an email
+});
+
 
    const mailOptions = {
         from: process.env.EMAIL_USER,  // Sender's email address
