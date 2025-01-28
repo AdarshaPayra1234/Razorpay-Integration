@@ -197,6 +197,9 @@ app.post('/contact-submit', (req, res) => {
     return res.status(200).json({ message: 'Your message has been sent successfully!' });
   });
 });
+app.get('/account', authenticateToken, (req, res) => {
+  // Logic to fetch the user profile data based on the token
+});
 
 // Serve static files (e.g., images, CSS, JS)
 app.use(express.static('public'));
