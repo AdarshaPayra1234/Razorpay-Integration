@@ -177,9 +177,8 @@ app.post('/save-booking', (req, res) => {
     });
 });
 
-// Contact form handler for sending email
-app.post('/contact-submit', (req, res) => {
-});
+app.post('/save-booking', (req, res) => {
+  console.log('Booking data received:', req.body);
 
 
    const mailOptions = {
