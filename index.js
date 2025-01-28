@@ -65,11 +65,14 @@ app.post('/create-order', (req, res) => {
 
 // Email Transporter Setup
 const transporter = nodemailer.createTransport({
-  service: 'gmail', // or other service like Outlook or Yahoo
-  auth: {
-    user: process.env.EMAIL_USER,   // Your email address
-    pass: process.env.EMAIL_PASS,   // Your email password or App Password
-  },
+    service: 'gmail',  // Gmail service
+    auth: {
+        user: process.env.EMAIL_USER,  // Your Gmail address (from .env)
+        pass: process.env.EMAIL_PASS,  // Your Gmail password (or App password)
+    },
+    tls: {
+        rejectUnauthorized: false  // Allow non-SSL email servers (sometimes required with Gmail)
+    }
 });
 
 // Endpoint to save booking details and send confirmation email
