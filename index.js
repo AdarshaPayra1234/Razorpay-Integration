@@ -151,7 +151,7 @@ app.post('/save-booking', (req, res) => {
               <br>
               <p style="font-size: 16px; color: #34495e; text-align: center;">Regards, <br><strong>Joker Creation Studio</strong></p>
               <p style="font-size: 14px; color: #34495e; text-align: center;">
-                <a href="http://www.jokercreation.store" style="color: #2980b9;">www.jokercreation.store</a><br>
+                <a href="https://www.jokercreation.store" style="color: #2980b9;">www.jokercreation.store</a><br>
                 Email: <a href="mailto:jokercreationbuisness@gmail.com" style="color: #2980b9;">jokercreationbuisness@gmail.com</a><br>
                 Mobile: 9641837935
               </p>
@@ -203,5 +203,5 @@ app.use(express.static('public'));
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on https://www.jokercreation.store:${PORT}`);
 });
