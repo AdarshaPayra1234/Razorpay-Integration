@@ -179,7 +179,6 @@ app.post('/save-booking', (req, res) => {
 
 // Contact form handler for sending email
 app.post('/contact-submit', (req, res) => {
-    // Handle the request here, e.g., send an email
 });
 
 
