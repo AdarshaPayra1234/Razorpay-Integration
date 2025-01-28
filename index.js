@@ -198,7 +198,6 @@ app.post('/contact-submit', (req, res) => {
   });
 });
 
-
 // Serve static files (e.g., images, CSS, JS)
 app.use(express.static('public'));
 
