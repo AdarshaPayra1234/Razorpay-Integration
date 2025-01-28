@@ -178,23 +178,23 @@ app.post('/save-booking', (req, res) => {
 app.post('/contact-submit', (req, res) => {
   const { name, mobile, email } = req.body;
 
-  const mailOptions = {
-    from: process.env.EMAIL_USER,
-    to: 'radhakantapayra@gmail.com',
-    subject: 'New Contact Form Submission',
-    text: `Name: ${name}\nMobile: ${mobile}\nEmail: ${email}`,
-  };
+   const mailOptions = {
+        from: process.env.EMAIL_USER,  // Sender's email address
+        to: process.env.EMAIL_TO,      // Your email address (recipient)
+        subject: 'New Contact Form Submission',  // Email subject
+        text: `Name: ${name}\nMobile: ${mobile}\nEmail: ${email}`, // Email body content
+    };
 
-  // Send email with contact form data
-  transporter.sendMail(mailOptions, (error, info) => {
-    if (error) {
-      console.error('Error sending email:', error);
-      return res.status(500).json({ message: 'Failed to send message' });
-    } else {
-      return res.status(200).json({ message: 'Message sent successfully!' });
-    }
-  });
+   transporter.sendMail(mailOptions, (error, info) => {
+        if (error) {
+            console.log('Error sending email:', error);
+            return res.status(500).json({ error: 'Failed to send email' });
+        }
+        console.log('Email sent:', info.response);
+        return res.status(200).json({ message: 'Your message has been sent successfully!' });
+    });
 });
+app.use(express.static('public'));
 
 // Start server
 app.listen(PORT, () => {
