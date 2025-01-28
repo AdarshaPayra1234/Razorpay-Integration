@@ -107,7 +107,7 @@ app.post('/save-booking', (req, res) => {
     .then(() => {
       console.log("Booking details saved successfully");
 
-      // Email sending setup
+      // Email sending setup with original style
       const mailOptions = {
         from: process.env.EMAIL_USER,
         to: customerEmail,
@@ -180,7 +180,6 @@ app.post('/save-booking', (req, res) => {
 app.post('/contact-submit', (req, res) => {
   const { name, mobile, email } = req.body;
 
-
    const mailOptions = {
         from: process.env.EMAIL_USER,  // Sender's email address
         to: process.env.EMAIL_TO,      // Your email address (recipient)
@@ -197,6 +196,7 @@ app.post('/contact-submit', (req, res) => {
         return res.status(200).json({ message: 'Your message has been sent successfully!' });
     });
 });
+
 app.use(express.static('public'));
 
 // Start server
