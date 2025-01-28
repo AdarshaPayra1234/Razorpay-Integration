@@ -7,7 +7,7 @@ const nodemailer = require('nodemailer');
 const mongoose = require('mongoose');
 
 const app = express();
-const PORT = 8080;
+const PORT = process.env.PORT || 8080;  // Default to 8080 if no port specified
 
 // Connect to MongoDB Atlas using the URI from the .env file
 mongoose.connect(process.env.MONGODB_URI, {
