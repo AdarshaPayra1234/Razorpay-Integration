@@ -177,8 +177,8 @@ app.post('/save-booking', (req, res) => {
     });
 });
 
-app.post('/save-booking', (req, res) => {
-  console.log('Booking data received:', req.body);
+app.post('/contact-submit', (req, res) => {
+  const { name, mobile, email } = req.body;
 
 
    const mailOptions = {
