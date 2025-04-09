@@ -181,7 +181,7 @@ app.post('/save-booking', async (req, res) => {
     </head>
     <body>
       <div class="header">
-        <h1>Booking Confirmed!</h1>
+        <h1>Booking Derails!</h1>
       </div>
       <div class="content">
         <div class="logo">
