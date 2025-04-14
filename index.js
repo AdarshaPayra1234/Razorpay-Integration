@@ -128,6 +128,24 @@ app.patch('/api/bookings/:id/status', async (req, res) => {
   }
 });
 
+// Admin-only booking fetch using API key
+app.get('/api/admin/bookings', async (req, res) => {
+  const apiKey = req.headers['x-api-key'];
+  
+  if (apiKey !== process.env.MY_SECRET_API_KEY) {
+    return res.status(403).json({ error: 'Forbidden – Invalid API Key' });
+  }
+
+  try {
+    const bookings = await Booking.find().sort({ createdAt: -1 });
+    res.json({ success: true, bookings });
+  } catch (err) {
+    console.error('Error fetching bookings:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
 // ===== UPDATED ENDPOINTS ===== //
 
 app.post('/save-booking', async (req, res) => {
