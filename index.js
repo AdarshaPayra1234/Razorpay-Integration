@@ -157,31 +157,9 @@ const authenticateAdmin = async (req, res, next) => {
   }
 };
 
-// Admin dashboard endpoints
-app.get('/api/admin/dashboard', authenticateAdmin, async (req, res) => {
-  try {
-    const bookings = await Booking.find().sort({ createdAt: -1 }).limit(10);
-    const pendingCount = await Booking.countDocuments({ status: 'pending' });
-    const confirmedCount = await Booking.countDocuments({ status: 'confirmed' });
-    const cancelledCount = await Booking.countDocuments({ status: 'cancelled' });
-    
-    res.json({
-      success: true,
-      stats: {
-        total: pendingCount + confirmedCount + cancelledCount,
-        pending: pendingCount,
-        confirmed: confirmedCount,
-        cancelled: cancelledCount
-      },
-      recentBookings: bookings
-    });
-  } catch (err) {
-    console.error('Admin dashboard error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
+// ===== BOOKING ROUTES ===== //
 
-// Get all bookings for admin
+// Get all bookings for admin with filters
 app.get('/api/admin/bookings', authenticateAdmin, async (req, res) => {
   try {
     const { status } = req.query;
@@ -196,6 +174,30 @@ app.get('/api/admin/bookings', authenticateAdmin, async (req, res) => {
   } catch (err) {
     console.error('Error fetching bookings:', err);
     res.status(500).json({ error: 'Failed to fetch bookings' });
+  }
+});
+
+// Get booking statistics for dashboard
+app.get('/api/admin/bookings/stats', authenticateAdmin, async (req, res) => {
+  try {
+    const pendingCount = await Booking.countDocuments({ status: 'pending' });
+    const confirmedCount = await Booking.countDocuments({ status: 'confirmed' });
+    const cancelledCount = await Booking.countDocuments({ status: 'cancelled' });
+    const completedCount = await Booking.countDocuments({ status: 'completed' });
+    
+    res.json({
+      success: true,
+      stats: {
+        total: pendingCount + confirmedCount + cancelledCount + completedCount,
+        pending: pendingCount,
+        confirmed: confirmedCount,
+        cancelled: cancelledCount,
+        completed: completedCount
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching booking stats:', err);
+    res.status(500).json({ error: 'Failed to fetch booking stats' });
   }
 });
 
@@ -253,6 +255,8 @@ app.patch('/api/admin/bookings/:id/status', authenticateAdmin, async (req, res) 
     res.status(500).json({ error: 'Failed to update booking' });
   }
 });
+
+// ===== MESSAGE ROUTES ===== //
 
 // Send message to user
 app.post('/api/admin/messages', authenticateAdmin, async (req, res) => {
@@ -316,21 +320,28 @@ app.post('/api/admin/messages', authenticateAdmin, async (req, res) => {
   }
 });
 
-// Get messages for a user
-app.get('/api/messages', async (req, res) => {
+// Get all messages (admin view)
+app.get('/api/admin/messages', authenticateAdmin, async (req, res) => {
   try {
-    const { email } = req.query;
-    if (!email) return res.status(400).json({ error: 'Email is required' });
-
-    const messages = await Message.find({ userEmail: email })
-      .sort({ createdAt: -1 });
+    const { filter } = req.query;
+    let query = {};
     
-    // Mark messages as read
-    await Message.updateMany(
-      { userEmail: email, isRead: false },
-      { $set: { isRead: true } }
-    );
+    // Apply filters based on frontend requirements
+    if (filter === 'today') {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      query.createdAt = { $gte: today };
+    } else if (filter === 'week') {
+      const oneWeekAgo = new Date();
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+      query.createdAt = { $gte: oneWeekAgo };
+    } else if (filter === 'month') {
+      const oneMonthAgo = new Date();
+      oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+      query.createdAt = { $gte: oneMonthAgo };
+    }
     
+    const messages = await Message.find(query).sort({ createdAt: -1 });
     res.json({ success: true, messages });
   } catch (err) {
     console.error('Error fetching messages:', err);
@@ -338,25 +349,37 @@ app.get('/api/messages', async (req, res) => {
   }
 });
 
-// Get unread message count for a user
-app.get('/api/messages/unread-count', async (req, res) => {
+// Delete a message
+app.delete('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
   try {
-    const { email } = req.query;
-    if (!email) return res.status(400).json({ error: 'Email is required' });
-
-    const count = await Message.countDocuments({ 
-      userEmail: email,
-      isRead: false 
-    });
+    const message = await Message.findByIdAndDelete(req.params.id);
     
-    res.json({ success: true, count });
+    if (!message) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+    
+    res.json({ success: true, message: 'Message deleted successfully' });
   } catch (err) {
-    console.error('Error fetching unread message count:', err);
-    res.status(500).json({ error: 'Failed to fetch unread message count' });
+    console.error('Error deleting message:', err);
+    res.status(500).json({ error: 'Failed to delete message' });
   }
 });
 
-// ===== EXISTING ENDPOINTS (unchanged) ===== //
+// Get recent messages (for dashboard)
+app.get('/api/admin/messages/recent', authenticateAdmin, async (req, res) => {
+  try {
+    const messages = await Message.find()
+      .sort({ createdAt: -1 })
+      .limit(5);
+    
+    res.json({ success: true, messages });
+  } catch (err) {
+    console.error('Error fetching recent messages:', err);
+    res.status(500).json({ error: 'Failed to fetch recent messages' });
+  }
+});
+
+// ===== EXISTING USER ROUTES (unchanged) ===== //
 
 app.get('/api/user-data', async (req, res) => {
   try {
@@ -414,22 +437,6 @@ app.patch('/api/bookings/:id/status', async (req, res) => {
   } catch (err) {
     console.error('Error updating booking:', err);
     res.status(500).json({ error: 'Failed to update booking' });
-  }
-});
-
-app.get('/api/admin/bookings', async (req, res) => {
-  const apiKey = req.headers['x-api-key'];
-  
-  if (apiKey !== process.env.MY_SECRET_API_KEY) {
-    return res.status(403).json({ error: 'Forbidden – Invalid API Key' });
-  }
-
-  try {
-    const bookings = await Booking.find().sort({ createdAt: -1 });
-    res.json({ success: true, bookings });
-  } catch (err) {
-    console.error('Error fetching bookings:', err);
-    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
