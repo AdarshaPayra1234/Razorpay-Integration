@@ -44,7 +44,8 @@ const messageSchema = new mongoose.Schema({
   userEmail: { type: String, required: true },
   message: { type: String, required: true },
   createdAt: { type: Date, default: Date.now },
-  isRead: { type: Boolean, default: false }
+  isRead: { type: Boolean, default: false },
+  notificationSeen: { type: Boolean, default: false } // New field for notification tracking
 });
 
 // Admin Schema
@@ -349,6 +350,36 @@ app.get('/api/admin/messages', authenticateAdmin, async (req, res) => {
   }
 });
 
+// Get all users who have received messages (for admin panel)
+app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
+  try {
+    // Get distinct user emails from messages
+    const usersWithMessages = await Message.aggregate([
+      {
+        $group: {
+          _id: "$userEmail",
+          lastMessageDate: { $max: "$createdAt" },
+          messageCount: { $sum: 1 }
+        }
+      },
+      {
+        $project: {
+          email: "$_id",
+          lastMessageDate: 1,
+          messageCount: 1,
+          _id: 0
+        }
+      },
+      { $sort: { lastMessageDate: -1 } }
+    ]);
+
+    res.json({ success: true, users: usersWithMessages });
+  } catch (err) {
+    console.error('Error fetching users with messages:', err);
+    res.status(500).json({ error: 'Failed to fetch users with messages' });
+  }
+});
+
 // Delete a message
 app.delete('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
   try {
@@ -376,6 +407,66 @@ app.get('/api/admin/messages/recent', authenticateAdmin, async (req, res) => {
   } catch (err) {
     console.error('Error fetching recent messages:', err);
     res.status(500).json({ error: 'Failed to fetch recent messages' });
+  }
+});
+
+// ===== USER MESSAGE NOTIFICATION ROUTES ===== //
+
+// Get messages for a user with notification status
+app.get('/api/messages', async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
+    const messages = await Message.find({ userEmail: email })
+      .sort({ createdAt: -1 });
+    
+    // Mark messages as read but keep notification unseen until user views them
+    await Message.updateMany(
+      { userEmail: email, isRead: false },
+      { $set: { isRead: true } }
+    );
+    
+    res.json({ success: true, messages });
+  } catch (err) {
+    console.error('Error fetching messages:', err);
+    res.status(500).json({ error: 'Failed to fetch messages' });
+  }
+});
+
+// Get unread message count for notification badge
+app.get('/api/messages/unread-count', async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
+    const count = await Message.countDocuments({ 
+      userEmail: email,
+      notificationSeen: false 
+    });
+    
+    res.json({ success: true, count });
+  } catch (err) {
+    console.error('Error fetching unread message count:', err);
+    res.status(500).json({ error: 'Failed to fetch unread message count' });
+  }
+});
+
+// Mark notifications as seen
+app.patch('/api/messages/mark-seen', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
+    await Message.updateMany(
+      { userEmail: email, notificationSeen: false },
+      { $set: { notificationSeen: true } }
+    );
+    
+    res.json({ success: true, message: 'Notifications marked as seen' });
+  } catch (err) {
+    console.error('Error marking notifications as seen:', err);
+    res.status(500).json({ error: 'Failed to update notifications' });
   }
 });
 
