@@ -7,6 +7,9 @@ const nodemailer = require('nodemailer');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -39,13 +42,21 @@ const bookingSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// Message Schema
+// Enhanced Message Schema with rich text support
 const messageSchema = new mongoose.Schema({
   userEmail: { type: String, required: true },
+  subject: { type: String, required: true },
   message: { type: String, required: true },
+  isHtml: { type: Boolean, default: false },
+  attachments: [{
+    filename: String,
+    path: String,
+    contentType: String,
+    size: Number
+  }],
   createdAt: { type: Date, default: Date.now },
   isRead: { type: Boolean, default: false },
-  notificationSeen: { type: Boolean, default: false } // New field for notification tracking
+  notificationSeen: { type: Boolean, default: false }
 });
 
 // Admin Schema
@@ -62,7 +73,8 @@ app.use(cors({
   origin: 'https://jokercreation.store',
   credentials: true
 }));
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
 // Razorpay Setup
 const razorpayInstance = new Razorpay({
@@ -70,7 +82,27 @@ const razorpayInstance = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-// Email Transporter
+// Configure multer for file uploads
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const uploadDir = path.join(__dirname, 'uploads');
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+      cb(null, uploadDir);
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+    }
+  }),
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit per file
+  }
+});
+
+// Email Transporter with improved configuration
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -79,7 +111,12 @@ const transporter = nodemailer.createTransport({
   },
   tls: {
     rejectUnauthorized: false
-  }
+  },
+  pool: true, // Use connection pooling
+  maxConnections: 5, // Maximum number of connections
+  maxMessages: 100, // Maximum messages per connection
+  rateLimit: 5, // Messages per second
+  debug: process.env.NODE_ENV === 'development' // Enable debugging in development
 });
 
 // Initialize admin account
@@ -257,66 +294,76 @@ app.patch('/api/admin/bookings/:id/status', authenticateAdmin, async (req, res) 
   }
 });
 
-// ===== MESSAGE ROUTES ===== //
+// ===== ENHANCED MESSAGE ROUTES ===== //
 
-// Send message to user
-app.post('/api/admin/messages', authenticateAdmin, async (req, res) => {
+// Send message to user with attachments and rich text support
+app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5), async (req, res) => {
   try {
-    const { userEmail, message } = req.body;
+    const { userEmail, subject, message, isHtml } = req.body;
+    const files = req.files || [];
     
-    if (!userEmail || !message) {
-      return res.status(400).json({ error: 'User email and message are required' });
+    if (!userEmail || !subject || !message) {
+      // Clean up uploaded files if validation fails
+      files.forEach(file => fs.unlinkSync(file.path));
+      return res.status(400).json({ error: 'User email, subject and message are required' });
     }
     
+    // Prepare attachments for database
+    const attachments = files.map(file => ({
+      filename: file.originalname,
+      path: file.path,
+      contentType: file.mimetype,
+      size: file.size
+    }));
+
     const newMessage = new Message({
       userEmail,
-      message
+      subject,
+      message,
+      isHtml: isHtml === 'true',
+      attachments
     });
     
     await newMessage.save();
     
-    // Send email notification to user about new message
-    const newMessageHtml = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <style>
-        body { font-family: 'Arial', sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-        .header { background-color: #00acc1; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }
-        .content { padding: 20px; background-color: #f9f9f9; border-radius: 0 0 5px 5px; }
-        .message { background-color: #fff; border: 1px solid #ddd; padding: 15px; margin: 15px 0; }
-        .footer { margin-top: 20px; font-size: 12px; text-align: center; color: #777; }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>New Message from Joker Creation Studio</h1>
-      </div>
-      <div class="content">
-        <p>You have received a new message from our team:</p>
-        <div class="message">
-          ${message}
-        </div>
-        <p>Please login to your account to view and respond to this message.</p>
-        <p>Best regards,<br>The Joker Creation Studio Team</p>
-      </div>
-      <div class="footer">
-        © 2025 Joker Creation Studio. All rights reserved.
-      </div>
-    </body>
-    </html>
-    `;
-    
-    await transporter.sendMail({
+    // Prepare email options
+    const mailOptions = {
       from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
       to: userEmail,
-      subject: 'New Message from Joker Creation Studio',
-      html: newMessageHtml
-    });
+      subject: subject,
+      html: isHtml === 'true' ? message : `<pre>${message}</pre>`,
+      attachments: files.map(file => ({
+        filename: file.originalname,
+        path: file.path,
+        contentType: file.mimetype
+      }))
+    };
+
+    // Send email
+    await transporter.sendMail(mailOptions);
     
-    res.json({ success: true, message: newMessage });
+    // Clean up files after sending
+    files.forEach(file => fs.unlinkSync(file.path));
+    
+    res.json({ 
+      success: true, 
+      message: {
+        ...newMessage.toObject(),
+        attachments: attachments.map(att => ({
+          filename: att.filename,
+          contentType: att.contentType,
+          size: att.size
+        }))
+      }
+    });
   } catch (err) {
     console.error('Error sending message:', err);
+    
+    // Clean up any uploaded files if error occurs
+    if (req.files) {
+      req.files.forEach(file => fs.unlinkSync(file.path));
+    }
+    
     res.status(500).json({ error: 'Failed to send message' });
   }
 });
@@ -343,10 +390,45 @@ app.get('/api/admin/messages', authenticateAdmin, async (req, res) => {
     }
     
     const messages = await Message.find(query).sort({ createdAt: -1 });
-    res.json({ success: true, messages });
+    
+    // Transform attachments to remove file paths
+    const sanitizedMessages = messages.map(msg => ({
+      ...msg.toObject(),
+      attachments: msg.attachments.map(att => ({
+        filename: att.filename,
+        contentType: att.contentType,
+        size: att.size
+      }))
+    }));
+    
+    res.json({ success: true, messages: sanitizedMessages });
   } catch (err) {
     console.error('Error fetching messages:', err);
     res.status(500).json({ error: 'Failed to fetch messages' });
+  }
+});
+
+// Download attachment
+app.get('/api/admin/messages/attachment/:messageId/:attachmentId', authenticateAdmin, async (req, res) => {
+  try {
+    const message = await Message.findById(req.params.messageId);
+    if (!message) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+    
+    const attachment = message.attachments.id(req.params.attachmentId);
+    if (!attachment) {
+      return res.status(404).json({ error: 'Attachment not found' });
+    }
+    
+    if (!fs.existsSync(attachment.path)) {
+      return res.status(404).json({ error: 'Attachment file not found' });
+    }
+    
+    res.download(attachment.path, attachment.filename);
+  } catch (err) {
+    console.error('Error downloading attachment:', err);
+    res.status(500).json({ error: 'Failed to download attachment' });
   }
 });
 
@@ -383,11 +465,20 @@ app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
 // Delete a message
 app.delete('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
   try {
-    const message = await Message.findByIdAndDelete(req.params.id);
+    const message = await Message.findById(req.params.id);
     
     if (!message) {
       return res.status(404).json({ error: 'Message not found' });
     }
+    
+    // Delete associated files
+    message.attachments.forEach(att => {
+      if (fs.existsSync(att.path)) {
+        fs.unlinkSync(att.path);
+      }
+    });
+    
+    await message.remove();
     
     res.json({ success: true, message: 'Message deleted successfully' });
   } catch (err) {
@@ -765,6 +856,13 @@ app.post('/contact-submit', (req, res) => {
 
 // Static files and server start
 app.use(express.static('public'));
+
+// Create uploads directory if it doesn't exist
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
