@@ -784,8 +784,34 @@ app.delete('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
 
 // Fetch emails from IMAP and save to database
 async function fetchEmails() {
+  let client;
   try {
-    await imapClient.connect();
+    client = new ImapFlow({
+      host: 'imap.hostinger.com',
+      port: 993,
+      secure: true,
+      auth: {
+        user: 'contact@jokercreation.store',
+        pass: process.env.EMAIL_PASS
+      },
+      logger: false
+    });
+
+    await client.connect();
+    // Rest of your email fetching logic
+    
+  } catch (err) {
+    console.error('Error fetching emails:', err);
+  } finally {
+    if (client) {
+      try {
+        await client.logout();
+      } catch (e) {
+        console.error('Error closing IMAP connection:', e);
+      }
+    }
+  }
+}
     
     // Select and lock the mailbox
     let lock = await imapClient.getMailboxLock('INBOX');
