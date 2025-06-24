@@ -183,6 +183,17 @@ const transporter = nodemailer.createTransport({
   debug: true
 });
 
+// IMAP Client for receiving emails
+const imapClient = new ImapFlow({
+  host: 'imap.hostinger.com',
+  port: 993,
+  secure: true,
+  auth: {
+    user: 'contact@jokercreation.store',
+    pass: process.env.EMAIL_PASS
+  },
+  logger: false
+});
 
 // Initialize admin account
 async function initializeAdmin() {
@@ -569,48 +580,19 @@ app.get('/api/admin/users/:email/bookings', authenticateAdmin, async (req, res) 
 // ===== MESSAGE ROUTES ===== //
 
 // Send message to user with attachments and rich text support
-/ Helper function to validate and sanitize emails
-// Fixed email sanitization function
-const validator = require('validator');
-
-// Helper function to validate and sanitize emails
-function sanitizeAndValidateEmails(emails) {
-  const emailArray = Array.isArray(emails) ? emails : [emails];
-  const validEmails = [];
-
-  for (const email of emailArray) {
-    // Properly formatted regular expression to remove brackets
-    const cleanEmail = String(email).replace(/[\[\]]/g, '').trim();
-    
-    if (validator.isEmail(cleanEmail)) {
-      validEmails.push(cleanEmail);
-    } else {
-      console.warn(`Invalid email address removed: ${email}`);
-    }
-  }
-
-  return validEmails;
-}
-
 app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5), async (req, res) => {
-  const files = req.files || [];
-  
   try {
     const { userEmails, subject, message, isHtml } = req.body;
+    const files = req.files || [];
     
-    // Validate required fields
     if (!userEmails || !subject || !message) {
+      // Clean up uploaded files if validation fails
       files.forEach(file => fs.unlinkSync(file.path));
       return res.status(400).json({ error: 'User emails, subject and message are required' });
     }
-
-    // Sanitize and validate emails
-    const validEmails = sanitizeAndValidateEmails(userEmails);
-    if (validEmails.length === 0) {
-      files.forEach(file => fs.unlinkSync(file.path));
-      return res.status(400).json({ error: 'No valid email addresses provided' });
-    }
-
+    
+    const emails = Array.isArray(userEmails) ? userEmails : [userEmails];
+    
     // Prepare attachments for database
     const attachments = files.map(file => ({
       filename: file.originalname,
@@ -621,33 +603,23 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
 
     // Save message for each recipient
     const savedMessages = [];
-    for (const email of validEmails) {
-      try {
-        const newMessage = new Message({
-          userEmail: email,
-          subject,
-          message,
-          isHtml: isHtml === 'true',
-          attachments
-        });
-        
-        await newMessage.save();
-        savedMessages.push(newMessage);
-      } catch (saveErr) {
-        console.error(`Error saving message for ${email}:`, saveErr);
-      }
+    for (const email of emails) {
+      const newMessage = new Message({
+        userEmail: email,
+        subject,
+        message,
+        isHtml: isHtml === 'true',
+        attachments
+      });
+      
+      await newMessage.save();
+      savedMessages.push(newMessage);
     }
-
-    // Only proceed with sending if we saved at least one message
-    if (savedMessages.length === 0) {
-      files.forEach(file => fs.unlinkSync(file.path));
-      return res.status(500).json({ error: 'Failed to save messages to database' });
-    }
-
+    
     // Prepare email options
     const mailOptions = {
       from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
-      to: validEmails.join(','),
+      to: emails.join(','),
       subject: subject,
       html: isHtml === 'true' ? message : `<pre>${message}</pre>`,
       attachments: files.map(file => ({
@@ -661,13 +633,7 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
     await transporter.sendMail(mailOptions);
     
     // Clean up files after sending
-    files.forEach(file => {
-      try {
-        fs.unlinkSync(file.path);
-      } catch (unlinkErr) {
-        console.error('Error deleting file:', file.path, unlinkErr);
-      }
-    });
+    files.forEach(file => fs.unlinkSync(file.path));
     
     res.json({ 
       success: true, 
@@ -683,23 +649,6 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
   } catch (err) {
     console.error('Error sending message:', err);
     
-    // Clean up any remaining files
-    files.forEach(file => {
-      try {
-        if (fs.existsSync(file.path)) {
-          fs.unlinkSync(file.path);
-        }
-      } catch (unlinkErr) {
-        console.error('Error cleaning up file:', file.path, unlinkErr);
-      }
-    });
-
-    res.status(500).json({ 
-      error: 'Failed to send message',
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
-  }
-});
     // Clean up any uploaded files if error occurs
     if (req.files) {
       req.files.forEach(file => fs.unlinkSync(file.path));
@@ -834,174 +783,80 @@ app.delete('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
 // ===== INBOX ROUTES ===== //
 
 // Fetch emails from IMAP and save to database
-// Initialize IMAP client outside the function
-const imapClient = new ImapFlow({
-  host: 'imap.hostinger.com',
-  port: 993,
-  secure: true,
-  auth: {
-    user: 'contact@jokercreation.store',
-    pass: process.env.EMAIL_PASS
-  },
-  logger: false
-});
-
-// Make sure the function is declared as async
-// Import required modules at the top (only once)
-
-// Email fetching function
-const fetchEmails = async () => {
-    const client = new ImapFlow({
-        host: process.env.IMAP_HOST || 'imap.hostinger.com',
-        port: parseInt(process.env.IMAP_PORT) || 993,
-        secure: true,
-        auth: {
-            user: process.env.EMAIL_USER || 'contact@jokercreation.store',
-            pass: process.env.EMAIL_PASS
-        },
-        logger: process.env.NODE_ENV === 'development'
-    });
-
+async function fetchEmails() {
+  try {
+    await imapClient.connect();
+    
+    // Select and lock the mailbox
+    let lock = await imapClient.getMailboxLock('INBOX');
     try {
-        // Connect to server
-        await client.connect();
-        console.log('IMAP connected successfully');
-
-        // Get mailbox lock
-        const lock = await client.getMailboxLock('INBOX');
-        console.log('Mailbox locked successfully');
-
-        try {
-            // Fetch messages from last 7 days
-            const messages = client.fetch(
-                { since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
-                { envelope: true, bodyStructure: true, source: true }
-            );
-
-            // Process messages
-            let messageCount = 0;
-            let newMessagesCount = 0;
-            
-            for await (const message of messages) {
-                console.log(`Processing message from: ${message.envelope.from[0].address}`);
-                messageCount++;
-
-                // Check if message already exists in database
-                const existingMessage = await InboxMessage.findOne({ 
-                    messageId: message.envelope.messageId 
-                });
-                
-                if (!existingMessage) {
-                    // Parse message content
-                    let text = '';
-                    let html = '';
-                    let attachments = [];
-                    
-                    if (message.bodyStructure.type === 'text') {
-                        if (message.bodyStructure.subtype === 'plain') {
-                            text = message.source.toString();
-                        } else if (message.bodyStructure.subtype === 'html') {
-                            html = message.source.toString();
-                        }
-                    } else if (message.bodyStructure.parts) {
-                        for (const part of message.bodyStructure.parts) {
-                            if (part.type === 'text' && part.subtype === 'plain') {
-                                text = message.parts[part.part]?.toString() || '';
-                            } else if (part.type === 'text' && part.subtype === 'html') {
-                                html = message.parts[part.part]?.toString() || '';
-                            } else if (part.disposition === 'attachment') {
-                                const attachment = {
-                                    filename: part.dispositionParameters?.filename || 'attachment',
-                                    content: message.parts[part.part],
-                                    contentType: `${part.type}/${part.subtype}`,
-                                    size: part.size
-                                };
-                                attachments.push(attachment);
-                            }
-                        }
-                    }
-
-                    // Save to database
-                    const newMessage = new InboxMessage({
-                        messageId: message.envelope.messageId,
-                        fromEmail: message.envelope.from[0]?.address,
-                        subject: message.envelope.subject || '(No Subject)',
-                        message: text || html,
-                        isHtml: !!html,
-                        attachments: attachments.map(att => ({
-                            filename: att.filename,
-                            contentType: att.contentType,
-                            size: att.size
-                        })),
-                        createdAt: message.envelope.date || new Date(),
-                        isRead: false,
-                        isImportant: false
-                    });
-
-                    await newMessage.save();
-                    newMessagesCount++;
-                    console.log(`Saved new message: ${message.envelope.subject}`);
-                }
+      // Fetch messages from the last 7 days
+      let messages = await imapClient.fetch(
+        { since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }, 
+        { envelope: true, bodyStructure: true, source: true }
+      );
+      
+      for await (let message of messages) {
+        // Check if message already exists in database
+        const existingMessage = await InboxMessage.findOne({ 
+          messageId: message.envelope.messageId 
+        });
+        
+        if (!existingMessage) {
+          // Parse message content
+          let text = '';
+          let html = '';
+          let attachments = [];
+          
+          if (message.bodyStructure.type === 'text') {
+            if (message.bodyStructure.subtype === 'plain') {
+              text = message.source.toString();
+            } else if (message.bodyStructure.subtype === 'html') {
+              html = message.source.toString();
             }
-
-            console.log(`Processed ${messageCount} messages, ${newMessagesCount} new messages saved`);
-        } finally {
-            // Release lock when done
-            lock.release();
-            console.log('Mailbox lock released');
-        }
-
-        // Logout when done
-        await client.logout();
-        console.log('IMAP disconnected successfully');
-    } catch (err) {
-        console.error('IMAP error:', err);
-        try {
-            // Try to logout even if there's an error
-            if (client && typeof client.logout === 'function') {
-                await client.logout();
+          } else if (message.bodyStructure.parts) {
+            for (let part of message.bodyStructure.parts) {
+              if (part.type === 'text' && part.subtype === 'plain') {
+                text = message.parts[part.part].toString();
+              } else if (part.type === 'text' && part.subtype === 'html') {
+                html = message.parts[part.part].toString();
+              } else if (part.disposition === 'attachment') {
+                const attachment = {
+                  filename: part.dispositionParameters.filename,
+                  content: message.parts[part.part],
+                  contentType: part.type + '/' + part.subtype,
+                  size: part.size
+                };
+                attachments.push(attachment);
+              }
             }
-        } catch (logoutErr) {
-            console.error('Logout error:', logoutErr);
+          }
+          
+          // Save to database
+          const newMessage = new InboxMessage({
+            messageId: message.envelope.messageId,
+            fromEmail: message.envelope.from[0].address,
+            subject: message.envelope.subject || '(No Subject)',
+            message: text || html,
+            isHtml: !!html,
+            createdAt: message.envelope.date,
+            isRead: false,
+            isImportant: false
+          });
+          
+          await newMessage.save();
         }
-        throw err;
+      }
+    } finally {
+      // Release the lock
+      lock.release();
     }
-};
-
-// Email fetching service with scheduling
-const startEmailFetchingService = () => {
-    // Initial fetch
-    fetchEmails()
-        .then(() => console.log('Initial email fetch completed'))
-        .catch(err => console.error('Initial email fetch failed:', err));
-
-    // Set up interval (10 minutes)
-    const interval = setInterval(() => {
-        fetchEmails()
-            .then(() => console.log('Scheduled email fetch completed'))
-            .catch(err => console.error('Scheduled email fetch failed:', err));
-    }, 10 * 60 * 1000);
-
-    // Cleanup on exit
-    const cleanup = () => {
-        clearInterval(interval);
-        console.log('Email fetching service stopped');
-    };
-
-    process.on('SIGTERM', cleanup);
-    process.on('SIGINT', cleanup);
-    process.on('uncaughtException', (err) => {
-        console.error('Uncaught exception:', err);
-        cleanup();
-    });
-
-    return cleanup;
-};
-
-// Start the email fetching service
-startEmailFetchingService();
-
-console.log('Email fetching service started');
+    
+    await imapClient.logout();
+  } catch (err) {
+    console.error('Error fetching emails:', err);
+  }
+}
 
 // Get inbox messages
 app.get('/api/admin/inbox', authenticateAdmin, async (req, res) => {
