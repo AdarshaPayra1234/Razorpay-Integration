@@ -572,24 +572,17 @@ app.get('/api/admin/users/:email/bookings', authenticateAdmin, async (req, res) 
 / Helper function to validate and sanitize emails
 // Fixed email sanitization function
 const validator = require('validator');
-function sanitizeEmail(email) {
-  return String(email).replace(/[\[\]]/g, '').trim();
-}
 
-// Fixed email validation function
-function validateEmail(email) {
-  const cleanEmail = sanitizeEmail(email);
-  return validator.isEmail(cleanEmail);
-}
-
-// Fixed email list processing
+// Helper function to validate and sanitize emails
 function sanitizeAndValidateEmails(emails) {
   const emailArray = Array.isArray(emails) ? emails : [emails];
   const validEmails = [];
 
   for (const email of emailArray) {
-    const cleanEmail = sanitizeEmail(email);
-    if (validateEmail(cleanEmail)) {
+    // Properly formatted regular expression to remove brackets
+    const cleanEmail = String(email).replace(/[\[\]]/g, '').trim();
+    
+    if (validator.isEmail(cleanEmail)) {
       validEmails.push(cleanEmail);
     } else {
       console.warn(`Invalid email address removed: ${email}`);
@@ -605,17 +598,18 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
   try {
     const { userEmails, subject, message, isHtml } = req.body;
     
+    // Validate required fields
     if (!userEmails || !subject || !message) {
       files.forEach(file => fs.unlinkSync(file.path));
       return res.status(400).json({ error: 'User emails, subject and message are required' });
     }
 
+    // Sanitize and validate emails
     const validEmails = sanitizeAndValidateEmails(userEmails);
     if (validEmails.length === 0) {
       files.forEach(file => fs.unlinkSync(file.path));
       return res.status(400).json({ error: 'No valid email addresses provided' });
     }
-
 
     // Prepare attachments for database
     const attachments = files.map(file => ({
@@ -660,40 +654,13 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
         filename: file.originalname,
         path: file.path,
         contentType: file.mimetype
-      })),
-      // Add headers to prevent certain email clients from modifying content
-      headers: {
-        'X-Priority': '1',
-        'X-MSMail-Priority': 'High',
-        'X-Mailer': 'JokerCreationStudio'
-      }
+      }))
     };
 
-    // Send email with retry logic
-    let sendAttempts = 0;
-    const maxAttempts = 2;
-    let lastError = null;
-
-    while (sendAttempts < maxAttempts) {
-      try {
-        await transporter.sendMail(mailOptions);
-        lastError = null;
-        break;
-      } catch (sendErr) {
-        lastError = sendErr;
-        sendAttempts++;
-        if (sendAttempts < maxAttempts) {
-          console.warn(`Email send failed, retrying (attempt ${sendAttempts + 1})...`);
-          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
-        }
-      }
-    }
-
-    if (lastError) {
-      throw lastError;
-    }
-
-    // Clean up files after successful sending
+    // Send email
+    await transporter.sendMail(mailOptions);
+    
+    // Clean up files after sending
     files.forEach(file => {
       try {
         fs.unlinkSync(file.path);
@@ -701,8 +668,7 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
         console.error('Error deleting file:', file.path, unlinkErr);
       }
     });
-
-    // Return success response
+    
     res.json({ 
       success: true, 
       messages: savedMessages.map(msg => ({
@@ -712,16 +678,10 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
           contentType: att.contentType,
           size: att.size
         }))
-      })),
-      stats: {
-        totalRecipients: validEmails.length,
-        successfulSaves: savedMessages.length,
-        failedSaves: validEmails.length - savedMessages.length
-      }
+      }))
     });
-
   } catch (err) {
-    console.error('Error in message sending endpoint:', err);
+    console.error('Error sending message:', err);
     
     // Clean up any remaining files
     files.forEach(file => {
@@ -734,16 +694,12 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
       }
     });
 
-    // Determine appropriate status code
-    const statusCode = err.code === 'EENVELOPE' ? 400 : 500;
-    
-    res.status(statusCode).json({ 
+    res.status(500).json({ 
       error: 'Failed to send message',
       details: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
   }
 });
-    
     // Clean up any uploaded files if error occurs
     if (req.files) {
       req.files.forEach(file => fs.unlinkSync(file.path));
