@@ -570,15 +570,25 @@ app.get('/api/admin/users/:email/bookings', authenticateAdmin, async (req, res) 
 
 // Send message to user with attachments and rich text support
 / Helper function to validate and sanitize emails
+// Fixed email sanitization function
+function sanitizeEmail(email) {
+  return String(email).replace(/[\[\]]/g, '').trim();
+}
+
+// Fixed email validation function
+function validateEmail(email) {
+  const cleanEmail = sanitizeEmail(email);
+  return validator.isEmail(cleanEmail);
+}
+
+// Fixed email list processing
 function sanitizeAndValidateEmails(emails) {
   const emailArray = Array.isArray(emails) ? emails : [emails];
   const validEmails = [];
 
   for (const email of emailArray) {
-    // Remove any brackets and trim whitespace
-    const cleanEmail = String(email).replace(/[\[\]]/g, '').trim();
-    
-    if (validator.isEmail(cleanEmail)) {
+    const cleanEmail = sanitizeEmail(email);
+    if (validateEmail(cleanEmail)) {
       validEmails.push(cleanEmail);
     } else {
       console.warn(`Invalid email address removed: ${email}`);
@@ -594,18 +604,17 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
   try {
     const { userEmails, subject, message, isHtml } = req.body;
     
-    // Validate required fields
     if (!userEmails || !subject || !message) {
       files.forEach(file => fs.unlinkSync(file.path));
       return res.status(400).json({ error: 'User emails, subject and message are required' });
     }
 
-    // Sanitize and validate emails
     const validEmails = sanitizeAndValidateEmails(userEmails);
     if (validEmails.length === 0) {
       files.forEach(file => fs.unlinkSync(file.path));
       return res.status(400).json({ error: 'No valid email addresses provided' });
     }
+
 
     // Prepare attachments for database
     const attachments = files.map(file => ({
