@@ -571,6 +571,7 @@ app.get('/api/admin/users/:email/bookings', authenticateAdmin, async (req, res) 
 // Send message to user with attachments and rich text support
 / Helper function to validate and sanitize emails
 // Fixed email sanitization function
+const validator = require('validator');
 function sanitizeEmail(email) {
   return String(email).replace(/[\[\]]/g, '').trim();
 }
