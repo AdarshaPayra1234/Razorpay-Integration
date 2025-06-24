@@ -183,17 +183,6 @@ const transporter = nodemailer.createTransport({
   debug: true
 });
 
-// IMAP Client for receiving emails
-const imapClient = new ImapFlow({
-  host: 'imap.hostinger.com',
-  port: 993,
-  secure: true,
-  auth: {
-    user: 'contact@jokercreation.store',
-    pass: process.env.EMAIL_PASS
-  },
-  logger: false
-});
 
 // Initialize admin account
 async function initializeAdmin() {
