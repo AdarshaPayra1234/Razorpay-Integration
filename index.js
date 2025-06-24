@@ -785,38 +785,88 @@ const imapClient = new ImapFlow({
 });
 
 // Make sure the function is declared as async
+// Import required modules
+const { ImapFlow } = require('imapflow');
+
+// Email fetching function
 async function fetchEmails() {
-  try {
-    await imapClient.connect();
-    
-    // Select and lock the mailbox
-    let lock = await imapClient.getMailboxLock('INBOX');
+    // Create new client instance for each fetch (avoids reuse issues)
+    const client = new ImapFlow({
+        host: 'imap.hostinger.com',
+        port: 993,
+        secure: true,
+        auth: {
+            user: 'contact@jokercreation.store',
+            pass: process.env.EMAIL_PASS
+        },
+        logger: false
+    });
+
     try {
-      // Fetch messages from the last 7 days
-      let messages = await imapClient.fetch(
-        { since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }, 
-        { envelope: true, bodyStructure: true, source: true }
-      );
-      
-      for await (let message of messages) {
-        // Your message processing logic here
-      }
-    } finally {
-      // Release the lock
-      lock.release();
+        // Connect to server
+        await client.connect();
+        console.log('IMAP connected');
+
+        // Get mailbox lock
+        let lock = await client.getMailboxLock('INBOX');
+        console.log('Mailbox locked');
+
+        try {
+            // Fetch messages from last 7 days
+            const messages = client.fetch(
+                { since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+                { envelope: true, bodyStructure: true, source: true }
+            );
+
+            // Process messages
+            for await (let message of messages) {
+                console.log('New message from:', message.envelope.from[0].address);
+                // Add your message processing logic here
+            }
+        } finally {
+            // Release lock when done
+            lock.release();
+            console.log('Mailbox lock released');
+        }
+
+        // Logout when done
+        await client.logout();
+        console.log('IMAP disconnected');
+    } catch (err) {
+        console.error('IMAP error:', err);
+        try {
+            // Try to logout even if there's an error
+            await client.logout();
+        } catch (logoutErr) {
+            console.error('Logout error:', logoutErr);
+        }
     }
-    
-    await imapClient.logout();
-  } catch (err) {
-    console.error('Error fetching emails:', err);
-    // Ensure we try to logout even if there's an error
-    try {
-      await imapClient.logout();
-    } catch (logoutErr) {
-      console.error('Error during logout:', logoutErr);
-    }
-  }
 }
+
+// Scheduled email fetching (every 10 minutes)
+function startEmailFetching() {
+    // Initial fetch
+    fetchEmails().catch(err => {
+        console.error('Initial email fetch failed:', err);
+    });
+
+    // Set up interval
+    const interval = setInterval(async () => {
+        try {
+            await fetchEmails();
+        } catch (err) {
+            console.error('Scheduled email fetch failed:', err);
+        }
+    }, 10 * 60 * 1000); // 10 minutes
+
+    // Cleanup on exit
+    process.on('SIGTERM', () => {
+        clearInterval(interval);
+    });
+}
+
+// Start the email fetching service
+startEmailFetching();
 
 // Start email fetching interval (every 10 minutes)
 setInterval(async () => {
