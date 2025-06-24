@@ -783,35 +783,65 @@ app.delete('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
 // ===== INBOX ROUTES ===== //
 
 // Fetch emails from IMAP and save to database
-async function fetchEmails() {
-  let client;
-  try {
-    client = new ImapFlow({
-      host: 'imap.hostinger.com',
-      port: 993,
-      secure: true,
-      auth: {
-        user: 'contact@jokercreation.store',
-        pass: process.env.EMAIL_PASS
-      },
-      logger: false
-    });
+// Initialize IMAP client outside the function
+const imapClient = new ImapFlow({
+  host: 'imap.hostinger.com',
+  port: 993,
+  secure: true,
+  auth: {
+    user: 'contact@jokercreation.store',
+    pass: process.env.EMAIL_PASS
+  },
+  logger: false
+});
 
-    await client.connect();
-    // Rest of your email fetching logic
+// Make sure the function is declared as async
+async function fetchEmails() {
+  try {
+    await imapClient.connect();
     
+    // Select and lock the mailbox
+    let lock = await imapClient.getMailboxLock('INBOX');
+    try {
+      // Fetch messages from the last 7 days
+      let messages = await imapClient.fetch(
+        { since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }, 
+        { envelope: true, bodyStructure: true, source: true }
+      );
+      
+      for await (let message of messages) {
+        // Your message processing logic here
+      }
+    } finally {
+      // Release the lock
+      lock.release();
+    }
+    
+    await imapClient.logout();
   } catch (err) {
     console.error('Error fetching emails:', err);
-  } finally {
-    if (client) {
-      try {
-        await client.logout();
-      } catch (e) {
-        console.error('Error closing IMAP connection:', e);
-      }
+    // Ensure we try to logout even if there's an error
+    try {
+      await imapClient.logout();
+    } catch (logoutErr) {
+      console.error('Error during logout:', logoutErr);
     }
   }
 }
+
+// Start email fetching interval (every 10 minutes)
+setInterval(async () => {
+  try {
+    await fetchEmails();
+  } catch (err) {
+    console.error('Error in scheduled email fetch:', err);
+  }
+}, 10 * 60 * 1000);
+
+// Initial email fetch when server starts
+fetchEmails().catch(err => {
+  console.error('Initial email fetch failed:', err);
+});
     
     // Select and lock the mailbox
     let lock = await imapClient.getMailboxLock('INBOX');
