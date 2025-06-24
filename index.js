@@ -789,7 +789,6 @@ const imapClient = new ImapFlow({
 
 // Email fetching function
 const fetchEmails = async () => {
-    // Create new client instance for each fetch
     const client = new ImapFlow({
         host: process.env.IMAP_HOST || 'imap.hostinger.com',
         port: parseInt(process.env.IMAP_PORT) || 993,
@@ -819,12 +818,71 @@ const fetchEmails = async () => {
 
             // Process messages
             let messageCount = 0;
+            let newMessagesCount = 0;
+            
             for await (const message of messages) {
-                console.log(`New message from: ${message.envelope.from[0].address}`);
+                console.log(`Processing message from: ${message.envelope.from[0].address}`);
                 messageCount++;
-                // Add your message processing logic here
+
+                // Check if message already exists in database
+                const existingMessage = await InboxMessage.findOne({ 
+                    messageId: message.envelope.messageId 
+                });
+                
+                if (!existingMessage) {
+                    // Parse message content
+                    let text = '';
+                    let html = '';
+                    let attachments = [];
+                    
+                    if (message.bodyStructure.type === 'text') {
+                        if (message.bodyStructure.subtype === 'plain') {
+                            text = message.source.toString();
+                        } else if (message.bodyStructure.subtype === 'html') {
+                            html = message.source.toString();
+                        }
+                    } else if (message.bodyStructure.parts) {
+                        for (const part of message.bodyStructure.parts) {
+                            if (part.type === 'text' && part.subtype === 'plain') {
+                                text = message.parts[part.part]?.toString() || '';
+                            } else if (part.type === 'text' && part.subtype === 'html') {
+                                html = message.parts[part.part]?.toString() || '';
+                            } else if (part.disposition === 'attachment') {
+                                const attachment = {
+                                    filename: part.dispositionParameters?.filename || 'attachment',
+                                    content: message.parts[part.part],
+                                    contentType: `${part.type}/${part.subtype}`,
+                                    size: part.size
+                                };
+                                attachments.push(attachment);
+                            }
+                        }
+                    }
+
+                    // Save to database
+                    const newMessage = new InboxMessage({
+                        messageId: message.envelope.messageId,
+                        fromEmail: message.envelope.from[0]?.address,
+                        subject: message.envelope.subject || '(No Subject)',
+                        message: text || html,
+                        isHtml: !!html,
+                        attachments: attachments.map(att => ({
+                            filename: att.filename,
+                            contentType: att.contentType,
+                            size: att.size
+                        })),
+                        createdAt: message.envelope.date || new Date(),
+                        isRead: false,
+                        isImportant: false
+                    });
+
+                    await newMessage.save();
+                    newMessagesCount++;
+                    console.log(`Saved new message: ${message.envelope.subject}`);
+                }
             }
-            console.log(`Processed ${messageCount} messages`);
+
+            console.log(`Processed ${messageCount} messages, ${newMessagesCount} new messages saved`);
         } finally {
             // Release lock when done
             lock.release();
@@ -844,7 +902,7 @@ const fetchEmails = async () => {
         } catch (logoutErr) {
             console.error('Logout error:', logoutErr);
         }
-        throw err; // Re-throw for calling function to handle
+        throw err;
     }
 };
 
@@ -882,77 +940,6 @@ const startEmailFetchingService = () => {
 startEmailFetchingService();
 
 console.log('Email fetching service started');
-    
-    // Select and lock the mailbox
-    let lock = await imapClient.getMailboxLock('INBOX');
-    try {
-      // Fetch messages from the last 7 days
-      let messages = await imapClient.fetch(
-        { since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }, 
-        { envelope: true, bodyStructure: true, source: true }
-      );
-      
-      for await (let message of messages) {
-        // Check if message already exists in database
-        const existingMessage = await InboxMessage.findOne({ 
-          messageId: message.envelope.messageId 
-        });
-        
-        if (!existingMessage) {
-          // Parse message content
-          let text = '';
-          let html = '';
-          let attachments = [];
-          
-          if (message.bodyStructure.type === 'text') {
-            if (message.bodyStructure.subtype === 'plain') {
-              text = message.source.toString();
-            } else if (message.bodyStructure.subtype === 'html') {
-              html = message.source.toString();
-            }
-          } else if (message.bodyStructure.parts) {
-            for (let part of message.bodyStructure.parts) {
-              if (part.type === 'text' && part.subtype === 'plain') {
-                text = message.parts[part.part].toString();
-              } else if (part.type === 'text' && part.subtype === 'html') {
-                html = message.parts[part.part].toString();
-              } else if (part.disposition === 'attachment') {
-                const attachment = {
-                  filename: part.dispositionParameters.filename,
-                  content: message.parts[part.part],
-                  contentType: part.type + '/' + part.subtype,
-                  size: part.size
-                };
-                attachments.push(attachment);
-              }
-            }
-          }
-          
-          // Save to database
-          const newMessage = new InboxMessage({
-            messageId: message.envelope.messageId,
-            fromEmail: message.envelope.from[0].address,
-            subject: message.envelope.subject || '(No Subject)',
-            message: text || html,
-            isHtml: !!html,
-            createdAt: message.envelope.date,
-            isRead: false,
-            isImportant: false
-          });
-          
-          await newMessage.save();
-        }
-      }
-    } finally {
-      // Release the lock
-      lock.release();
-    }
-    
-    await imapClient.logout();
-  } catch (err) {
-    console.error('Error fetching emails:', err);
-  }
-}
 
 // Get inbox messages
 app.get('/api/admin/inbox', authenticateAdmin, async (req, res) => {
