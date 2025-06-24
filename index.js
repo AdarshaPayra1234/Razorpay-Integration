@@ -786,7 +786,6 @@ const imapClient = new ImapFlow({
 
 // Make sure the function is declared as async
 // Import required modules at the top (only once)
-const { ImapFlow } = require('imapflow');
 
 // Email fetching function
 const fetchEmails = async () => {
