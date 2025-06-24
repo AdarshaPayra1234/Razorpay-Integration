@@ -103,21 +103,34 @@ const upload = multer({
 });
 
 // Email Transporter with improved configuration
+// Email Transporter with Hostinger SMTP configuration
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.hostinger.com', // Hostinger SMTP server
+  port: 465, // SSL port
+  secure: true, // true for 465 (SSL), false for other ports
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
+    user: 'contact@jokercreation.store', // Your Hostinger business email
+    pass: process.env.EMAIL_PASS, // Password from .env
   },
   tls: {
-    rejectUnauthorized: false
+    rejectUnauthorized: false // For self-signed certificates (if needed)
   },
   pool: true, // Use connection pooling
-  maxConnections: 5, // Maximum number of connections
-  maxMessages: 100, // Maximum messages per connection
-  rateLimit: 5, // Messages per second
-  debug: process.env.NODE_ENV === 'development' // Enable debugging in development
+  maxConnections: 5,
+  maxMessages: 100,
+  rateLimit: 5,
+  debug: process.env.NODE_ENV === 'development'
 });
+
+// For IMAP (if you need email receiving functionality later)
+const imapConfig = {
+  user: 'contact@jokercreation.store',
+  password: process.env.EMAIL_PASS,
+  host: 'imap.hostinger.com',
+  port: 993,
+  tls: true,
+  tlsOptions: { rejectUnauthorized: false }
+};
 
 // Initialize admin account
 async function initializeAdmin() {
