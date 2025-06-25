@@ -105,25 +105,25 @@ const Admin = mongoose.model('Admin', adminSchema);
 const Gallery = mongoose.model('Gallery', gallerySchema);
 const Settings = mongoose.model('Settings', settingsSchema);
 
-const allowedOrigins = [
-  'https://jokercreation.store',
-  'http://localhost:3000' // Remove the trailing comma to avoid syntax issues
-];
+// Option 1: Simple version
+app.use(cors({
+  origin: ['https://jokercreation.store', 'http://localhost:3000'],
+  credentials: true
+}));
 
+// Option 2: More explicit version
+const allowedOrigins = ['https://jokercreation.store', 'http://localhost:3000'];
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'The CORS policy for this site does not allow access from the specified origin.';
-      return callback(new Error(msg), false);
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
     }
-    return callback(null, true);
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(bodyParser.json({ limit: '10mb' }));
