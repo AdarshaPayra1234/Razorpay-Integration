@@ -465,7 +465,15 @@ app.get('/api/admin/users/stats', authenticateAdmin, async (req, res) => {
         $group: {
           _id: null,
           totalUsers: { $sum: 1 },
-          googleUsers: { $sum: { $cond: [{ $eq: ["$hasGoogleAuth", true] }, 1, 0] }
+          googleUsers: { 
+            $sum: { 
+              $cond: [
+                { $eq: ["$hasGoogleAuth", true] }, 
+                1, 
+                0
+              ] 
+            } // This closing bracket was missing
+          }
         }
       }
     ]);
@@ -490,7 +498,7 @@ app.get('/api/admin/users/stats', authenticateAdmin, async (req, res) => {
 // ===== GALLERY MANAGEMENT ROUTES ===== //
 
 // Upload gallery photos
-app.post('/api/admin/gallery', authenticateAdmin, upload.array('images', 10), async (req, res) => {
+app.post('/api/admin/gallery', authenticateAdmin, upload.array('images', 10), async (req, res) => { // Make sure 'res' is properly declared here
   try {
     const { name, description, category, featured } = req.body;
     const files = req.files;
@@ -500,8 +508,6 @@ app.post('/api/admin/gallery', authenticateAdmin, upload.array('images', 10), as
     }
     
     const galleryItems = await Promise.all(files.map(async (file) => {
-      // In a real app, you would upload to Postinger or another image hosting service here
-      // For demo, we'll just save the file path
       const imageUrl = `/uploads/${file.filename}`;
       
       const galleryItem = new Gallery({
@@ -514,9 +520,9 @@ app.post('/api/admin/gallery', authenticateAdmin, upload.array('images', 10), as
       
       await galleryItem.save();
       return galleryItem;
-    });
+    }));
     
-    res.json({ success: true, galleryItems });
+    res.json({ success: true, galleryItems }); // This 'res' should now be properly recognized
   } catch (err) {
     console.error('Error uploading gallery images:', err);
     
