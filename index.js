@@ -32,7 +32,6 @@ const bookingSchema = new mongoose.Schema({
   preWeddingDate: String,
   address: String,
   transactionId: String,
-  amount: Number,
   paymentStatus: { type: String, default: 'pending' },
   status: { 
     type: String, 
@@ -66,29 +65,27 @@ const adminSchema = new mongoose.Schema({
   password: { type: String, required: true }
 });
 
-// Gallery Schema for photo management
+// Gallery Schema for image management
 const gallerySchema = new mongoose.Schema({
-  name: { type: String, required: true },
+  name: String,
   description: String,
-  category: { 
-    type: String, 
-    enum: ['portraits', 'events', 'products', 'weddings', 'other'],
-    default: 'other'
-  },
-  imageUrl: { type: String, required: true },
+  category: { type: String, enum: ['portraits', 'events', 'products', 'other'] },
   featured: { type: Boolean, default: false },
-  createdAt: { type: Date, default: Date.now }
+  imageUrl: { type: String, required: true },
+  thumbnailUrl: String,
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
 });
 
-// Settings Schema
+// Settings Schema for admin panel
 const settingsSchema = new mongoose.Schema({
   siteName: { type: String, default: 'Joker Creation Studio' },
   siteDescription: { type: String, default: 'Professional Photography Services' },
   contactEmail: { type: String, default: 'contact@jokercreation.com' },
   contactPhone: { type: String, default: '+1234567890' },
-  bookingLeadTime: { type: Number, default: 24 }, // hours
+  bookingLeadTime: { type: Number, default: 24 }, // in hours
   maxBookingsPerDay: { type: Number, default: 3 },
-  cancellationPolicy: { type: String, default: 'Cancellations must be made at least 24 hours in advance for a full refund.' },
+  cancellationPolicy: String,
   smtpHost: String,
   smtpPort: Number,
   smtpUser: String,
@@ -105,29 +102,13 @@ const Admin = mongoose.model('Admin', adminSchema);
 const Gallery = mongoose.model('Gallery', gallerySchema);
 const Settings = mongoose.model('Settings', settingsSchema);
 
-// Option 1: Simple version
 app.use(cors({
   origin: ['https://jokercreation.store', 'http://localhost:3000'],
   credentials: true
 }));
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
 
-// Option 2: More explicit version
-const allowedOrigins = ['https://jokercreation.store', 'http://localhost:3000'];
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-app.use(bodyParser.json({ limit: '10mb' }));
-app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 // Razorpay Setup
 const razorpayInstance = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
@@ -150,7 +131,7 @@ const upload = multer({
     }
   }),
   limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit per file
+    fileSize: 50 * 1024 * 1024 // 50MB limit per file
   }
 });
 
@@ -171,7 +152,7 @@ const transporter = nodemailer.createTransport({
   debug: true    // Show debug output
 });
 
-// Initialize admin account
+// Initialize admin account and default settings
 async function initializeAdmin() {
   try {
     const adminEmail = 'jokercreationbuisness@gmail.com';
@@ -191,7 +172,9 @@ async function initializeAdmin() {
     // Initialize default settings if they don't exist
     const existingSettings = await Settings.findOne();
     if (!existingSettings) {
-      const defaultSettings = new Settings();
+      const defaultSettings = new Settings({
+        cancellationPolicy: 'Cancellations must be made at least 24 hours in advance for a full refund.'
+      });
       await defaultSettings.save();
       console.log('Default settings initialized');
     }
@@ -222,7 +205,7 @@ app.post('/api/admin/login', async (req, res) => {
     const token = jwt.sign(
       { email: admin.email, role: 'admin' },
       process.env.JWT_SECRET,
-      { expiresIn: '1h' }
+      { expiresIn: '8h' }
     );
     
     res.json({ success: true, token });
@@ -262,7 +245,7 @@ const authenticateAdmin = async (req, res, next) => {
 // Get all bookings for admin with filters
 app.get('/api/admin/bookings', authenticateAdmin, async (req, res) => {
   try {
-    const { status, search } = req.query;
+    const { status, search, page = 1, limit = 10 } = req.query;
     let query = {};
     
     if (status && ['pending', 'confirmed', 'cancelled', 'completed'].includes(status)) {
@@ -275,25 +258,40 @@ app.get('/api/admin/bookings', authenticateAdmin, async (req, res) => {
         { customerName: searchRegex },
         { customerEmail: searchRegex },
         { package: searchRegex },
+        { transactionId: searchRegex },
         { _id: searchRegex }
       ];
     }
     
-    const bookings = await Booking.find(query).sort({ createdAt: -1 });
-    res.json({ success: true, bookings });
+    const skip = (page - 1) * limit;
+    const bookings = await Booking.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Booking.countDocuments(query);
+    
+    res.json({ 
+      success: true, 
+      bookings,
+      total,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page)
+    });
   } catch (err) {
     console.error('Error fetching bookings:', err);
     res.status(500).json({ error: 'Failed to fetch bookings' });
   }
 });
 
-// Get booking by ID
+// Get single booking details
 app.get('/api/admin/bookings/:id', authenticateAdmin, async (req, res) => {
   try {
     const booking = await Booking.findById(req.params.id);
     if (!booking) {
       return res.status(404).json({ error: 'Booking not found' });
     }
+    
     res.json({ success: true, booking });
   } catch (err) {
     console.error('Error fetching booking:', err);
@@ -309,10 +307,17 @@ app.get('/api/admin/bookings/stats', authenticateAdmin, async (req, res) => {
     const cancelledCount = await Booking.countDocuments({ status: 'cancelled' });
     const completedCount = await Booking.countDocuments({ status: 'completed' });
     
-    // Get upcoming bookings (confirmed and date is in future)
-    const upcomingCount = await Booking.countDocuments({ 
-      status: 'confirmed',
-      bookingDates: { $gte: new Date().toISOString() }
+    // Get today's bookings
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayBookings = await Booking.countDocuments({ 
+      createdAt: { $gte: today } 
+    });
+    
+    // Get this month's bookings
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    const monthlyBookings = await Booking.countDocuments({
+      createdAt: { $gte: firstDayOfMonth }
     });
     
     res.json({
@@ -322,8 +327,9 @@ app.get('/api/admin/bookings/stats', authenticateAdmin, async (req, res) => {
         pending: pendingCount,
         confirmed: confirmedCount,
         cancelled: cancelledCount,
-        upcoming: upcomingCount,
-        completed: completedCount
+        completed: completedCount,
+        today: todayBookings,
+        monthly: monthlyBookings
       }
     });
   } catch (err) {
@@ -392,31 +398,31 @@ app.patch('/api/admin/bookings/:id/status', authenticateAdmin, async (req, res) 
 // Get all users for admin panel
 app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
   try {
-    const { filter, search } = req.query;
+    const { search, filter, page = 1, limit = 10 } = req.query;
     let query = {};
     
-    if (filter === 'admin') {
-      query.isAdmin = true;
-    } else if (filter === 'active') {
-      query.isActive = true;
-    } else if (filter === 'inactive') {
-      query.isActive = false;
-    } else if (filter === 'verified') {
-      query.emailVerified = true;
-    } else if (filter === 'unverified') {
-      query.emailVerified = false;
-    }
-    
+    // Apply search filter
     if (search) {
       const searchRegex = new RegExp(search, 'i');
       query.$or = [
-        { name: searchRegex },
         { email: searchRegex },
+        { name: searchRegex },
         { phone: searchRegex }
       ];
     }
     
-    // For demo purposes, we'll return users from bookings since we don't have a separate users collection
+    // Apply additional filters
+    if (filter === 'verified') {
+      query.emailVerified = true;
+    } else if (filter === 'unverified') {
+      query.emailVerified = false;
+    } else if (filter === 'active') {
+      query.isActive = true;
+    } else if (filter === 'inactive') {
+      query.isActive = false;
+    }
+    
+    const skip = (page - 1) * limit;
     const users = await Booking.aggregate([
       {
         $group: {
@@ -424,26 +430,27 @@ app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
           name: { $first: "$customerName" },
           phone: { $first: "$customerPhone" },
           bookingsCount: { $sum: 1 },
-          lastBookingDate: { $max: "$createdAt" }
+          lastBooking: { $max: "$createdAt" }
         }
       },
-      {
-        $project: {
-          _id: 0,
-          email: "$_id",
-          name: 1,
-          phone: 1,
-          bookingsCount: 1,
-          lastBookingDate: 1,
-          isActive: { $literal: true }, // Demo value
-          emailVerified: { $literal: true }, // Demo value
-          isAdmin: { $literal: false } // Demo value
-        }
-      },
-      { $sort: { lastBookingDate: -1 } }
+      { $match: query },
+      { $sort: { lastBooking: -1 } },
+      { $skip: skip },
+      { $limit: parseInt(limit) }
     ]);
     
-    res.json({ success: true, users });
+    const total = await Booking.aggregate([
+      { $group: { _id: "$customerEmail" } },
+      { $count: "total" }
+    ]);
+    
+    res.json({
+      success: true,
+      users,
+      total: total.length > 0 ? total[0].total : 0,
+      totalPages: Math.ceil((total.length > 0 ? total[0].total : 0) / limit),
+      currentPage: parseInt(page)
+    });
   } catch (err) {
     console.error('Error fetching users:', err);
     res.status(500).json({ error: 'Failed to fetch users' });
@@ -453,152 +460,31 @@ app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
 // Get user statistics for dashboard
 app.get('/api/admin/users/stats', authenticateAdmin, async (req, res) => {
   try {
-    // For demo purposes, we'll calculate stats from bookings
-    const users = await Booking.aggregate([
-      {
-        $group: {
-          _id: "$customerEmail",
-          hasGoogleAuth: { $literal: false } // Demo value
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          totalUsers: { $sum: 1 },
-          googleUsers: { 
-            $sum: { 
-              $cond: [
-                { $eq: ["$hasGoogleAuth", true] }, 
-                1, 
-                0
-              ] 
-            } // This closing bracket was missing
-          }
-        }
-      }
+    // Get unique users from bookings
+    const totalUsers = await Booking.aggregate([
+      { $group: { _id: "$customerEmail" } },
+      { $count: "total" }
     ]);
     
-    const stats = users[0] || { totalUsers: 0, googleUsers: 0 };
+    // Get users with verified emails (mock - in real app this would come from user service)
+    const verifiedUsers = await Booking.aggregate([
+      { $match: { customerEmail: { $ne: null } } },
+      { $group: { _id: "$customerEmail" } },
+      { $count: "total" }
+    ]);
     
     res.json({
       success: true,
       stats: {
-        totalUsers: stats.totalUsers,
-        verifiedUsers: stats.totalUsers, // Assuming all are verified for demo
-        googleUsers: stats.googleUsers,
-        activeUsers: stats.totalUsers // Assuming all are active for demo
+        totalUsers: totalUsers.length > 0 ? totalUsers[0].total : 0,
+        verifiedUsers: verifiedUsers.length > 0 ? verifiedUsers[0].total : 0,
+        googleUsers: 0, // Placeholder - would come from user service
+        activeUsers: totalUsers.length > 0 ? totalUsers[0].total : 0 // Placeholder
       }
     });
   } catch (err) {
     console.error('Error fetching user stats:', err);
     res.status(500).json({ error: 'Failed to fetch user stats' });
-  }
-});
-
-// ===== GALLERY MANAGEMENT ROUTES ===== //
-
-// Upload gallery photos
-app.post('/api/admin/gallery', authenticateAdmin, upload.array('images', 10), async (req, res) => { // Make sure 'res' is properly declared here
-  try {
-    const { name, description, category, featured } = req.body;
-    const files = req.files;
-    
-    if (!files || files.length === 0) {
-      return res.status(400).json({ error: 'No images uploaded' });
-    }
-    
-    const galleryItems = await Promise.all(files.map(async (file) => {
-      const imageUrl = `/uploads/${file.filename}`;
-      
-      const galleryItem = new Gallery({
-        name: name || file.originalname,
-        description,
-        category: category || 'other',
-        imageUrl,
-        featured: featured === 'true'
-      });
-      
-      await galleryItem.save();
-      return galleryItem;
-    }));
-    
-    res.json({ success: true, galleryItems }); // This 'res' should now be properly recognized
-  } catch (err) {
-    console.error('Error uploading gallery images:', err);
-    
-    // Clean up any uploaded files if error occurs
-    if (req.files) {
-      req.files.forEach(file => fs.unlinkSync(file.path));
-    }
-    
-    res.status(500).json({ error: 'Failed to upload gallery images' });
-  }
-});
-
-// Get gallery photos with filters
-app.get('/api/admin/gallery', authenticateAdmin, async (req, res) => {
-  try {
-    const { filter, search } = req.query;
-    let query = {};
-    
-    if (filter && ['portraits', 'events', 'products', 'weddings', 'other'].includes(filter)) {
-      query.category = filter;
-    } else if (filter === 'featured') {
-      query.featured = true;
-    }
-    
-    if (search) {
-      query.name = new RegExp(search, 'i');
-    }
-    
-    const galleryItems = await Gallery.find(query).sort({ createdAt: -1 });
-    res.json({ success: true, galleryItems });
-  } catch (err) {
-    console.error('Error fetching gallery items:', err);
-    res.status(500).json({ error: 'Failed to fetch gallery items' });
-  }
-});
-
-// Toggle featured status of gallery item
-app.patch('/api/admin/gallery/:id/featured', authenticateAdmin, async (req, res) => {
-  try {
-    const { featured } = req.body;
-    const galleryItem = await Gallery.findByIdAndUpdate(
-      req.params.id,
-      { featured },
-      { new: true }
-    );
-    
-    if (!galleryItem) {
-      return res.status(404).json({ error: 'Gallery item not found' });
-    }
-    
-    res.json({ success: true, galleryItem });
-  } catch (err) {
-    console.error('Error updating gallery item:', err);
-    res.status(500).json({ error: 'Failed to update gallery item' });
-  }
-});
-
-// Delete gallery item
-app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
-  try {
-    const galleryItem = await Gallery.findById(req.params.id);
-    if (!galleryItem) {
-      return res.status(404).json({ error: 'Gallery item not found' });
-    }
-    
-    // Delete the image file
-    if (galleryItem.imageUrl && fs.existsSync(path.join(__dirname, galleryItem.imageUrl))) {
-      fs.unlinkSync(path.join(__dirname, galleryItem.imageUrl));
-    }
-    
-    await galleryItem.remove();
-    
-    res.json({ success: true, message: 'Gallery item deleted successfully' });
-  } catch (err) {
-    console.error('Error deleting gallery item:', err);
-    res.status(500).json({ error: 'Failed to delete gallery item' });
   }
 });
 
@@ -613,13 +499,14 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
     if (!userEmails || !subject || !message) {
       // Clean up uploaded files if validation fails
       files.forEach(file => fs.unlinkSync(file.path));
-      return res.status(400).json({ error: 'User emails, subject and message are required' });
+      return res.status(400).json({ error: 'Recipients, subject and message are required' });
     }
     
-    const emails = JSON.parse(userEmails);
+    // Parse userEmails (can be string or array)
+    const emails = Array.isArray(userEmails) ? userEmails : JSON.parse(userEmails);
     if (!Array.isArray(emails) || emails.length === 0) {
       files.forEach(file => fs.unlinkSync(file.path));
-      return res.status(400).json({ error: 'At least one recipient email is required' });
+      return res.status(400).json({ error: 'At least one recipient is required' });
     }
     
     // Prepare attachments for database
@@ -630,8 +517,9 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
       size: file.size
     }));
 
-    // Save a message record for each recipient
-    const messages = await Promise.all(emails.map(async (email) => {
+    // Save message for each recipient
+    const savedMessages = [];
+    for (const email of emails) {
       const newMessage = new Message({
         userEmail: email,
         subject,
@@ -641,8 +529,8 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
       });
       
       await newMessage.save();
-      return newMessage;
-    }));
+      savedMessages.push(newMessage);
+    }
     
     // Prepare email options
     const mailOptions = {
@@ -665,9 +553,9 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
     
     res.json({ 
       success: true, 
-      messages: messages.map(msg => ({
+      messages: savedMessages.map(msg => ({
         ...msg.toObject(),
-        attachments: attachments.map(att => ({
+        attachments: msg.attachments.map(att => ({
           filename: att.filename,
           contentType: att.contentType,
           size: att.size
@@ -686,12 +574,13 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
   }
 });
 
-// Get all sent messages (admin view)
+// Get all messages (admin view)
 app.get('/api/admin/messages', authenticateAdmin, async (req, res) => {
   try {
-    const { filter, search } = req.query;
+    const { filter, search, page = 1, limit = 10 } = req.query;
     let query = {};
     
+    // Apply filters
     if (filter === 'today') {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -706,6 +595,7 @@ app.get('/api/admin/messages', authenticateAdmin, async (req, res) => {
       query.createdAt = { $gte: oneMonthAgo };
     }
     
+    // Apply search
     if (search) {
       const searchRegex = new RegExp(search, 'i');
       query.$or = [
@@ -715,7 +605,13 @@ app.get('/api/admin/messages', authenticateAdmin, async (req, res) => {
       ];
     }
     
-    const messages = await Message.find(query).sort({ createdAt: -1 });
+    const skip = (page - 1) * limit;
+    const messages = await Message.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Message.countDocuments(query);
     
     // Transform attachments to remove file paths
     const sanitizedMessages = messages.map(msg => ({
@@ -727,7 +623,13 @@ app.get('/api/admin/messages', authenticateAdmin, async (req, res) => {
       }))
     }));
     
-    res.json({ success: true, messages: sanitizedMessages });
+    res.json({ 
+      success: true, 
+      messages: sanitizedMessages,
+      total,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page)
+    });
   } catch (err) {
     console.error('Error fetching messages:', err);
     res.status(500).json({ error: 'Failed to fetch messages' });
@@ -745,6 +647,30 @@ app.get('/api/admin/messages/recent', authenticateAdmin, async (req, res) => {
   } catch (err) {
     console.error('Error fetching recent messages:', err);
     res.status(500).json({ error: 'Failed to fetch recent messages' });
+  }
+});
+
+// Download attachment
+app.get('/api/admin/messages/attachment/:messageId/:attachmentId', authenticateAdmin, async (req, res) => {
+  try {
+    const message = await Message.findById(req.params.messageId);
+    if (!message) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+    
+    const attachment = message.attachments.id(req.params.attachmentId);
+    if (!attachment) {
+      return res.status(404).json({ error: 'Attachment not found' });
+    }
+    
+    if (!fs.existsSync(attachment.path)) {
+      return res.status(404).json({ error: 'Attachment file not found' });
+    }
+    
+    res.download(attachment.path, attachment.filename);
+  } catch (err) {
+    console.error('Error downloading attachment:', err);
+    res.status(500).json({ error: 'Failed to download attachment' });
   }
 });
 
@@ -773,109 +699,142 @@ app.delete('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
   }
 });
 
-// ===== INBOX MESSAGES ROUTES ===== //
+// ===== GALLERY ROUTES ===== //
 
-// Get inbox messages (contact form submissions)
-app.get('/api/admin/inbox', authenticateAdmin, async (req, res) => {
+// Upload gallery images
+app.post('/api/admin/gallery', authenticateAdmin, upload.array('images', 10), async (req, res) => {
   try {
-    const { filter, search } = req.query;
+    const { name, description, category, featured } = req.body;
+    const files = req.files || [];
+    
+    if (files.length === 0) {
+      return res.status(400).json({ error: 'At least one image is required' });
+    }
+    
+    const savedImages = [];
+    
+    for (const file of files) {
+      // In a real app, you would upload to cloud storage like S3 or Cloudinary
+      // For now, we'll just save the file path
+      const imageUrl = `/uploads/${file.filename}`;
+      
+      const galleryItem = new Gallery({
+        name: name || file.originalname,
+        description: description || '',
+        category: category || 'other',
+        featured: featured === 'true',
+        imageUrl,
+        thumbnailUrl: imageUrl // In real app, generate thumbnail
+      });
+      
+      await galleryItem.save();
+      savedImages.push(galleryItem);
+    }
+    
+    res.json({ success: true, images: savedImages });
+  } catch (err) {
+    console.error('Error uploading gallery images:', err);
+    
+    // Clean up uploaded files if error occurs
+    if (req.files) {
+      req.files.forEach(file => fs.unlinkSync(file.path));
+    }
+    
+    res.status(500).json({ error: 'Failed to upload images' });
+  }
+});
+
+// Get all gallery images with filters
+app.get('/api/admin/gallery', authenticateAdmin, async (req, res) => {
+  try {
+    const { category, featured, search, page = 1, limit = 12 } = req.query;
     let query = {};
     
-    if (filter === 'unread') {
-      query.isRead = false;
-    } else if (filter === 'important') {
-      query.important = true;
+    if (category) {
+      query.category = category;
+    }
+    
+    if (featured === 'true') {
+      query.featured = true;
     }
     
     if (search) {
       const searchRegex = new RegExp(search, 'i');
       query.$or = [
         { name: searchRegex },
-        { email: searchRegex },
-        { message: searchRegex }
+        { description: searchRegex }
       ];
     }
     
-    // In a real app, you would query your contact form submissions collection
-    // For demo, we'll return some mock data
-    const mockInbox = [
+    const skip = (page - 1) * limit;
+    const images = await Gallery.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Gallery.countDocuments(query);
+    
+    res.json({
+      success: true,
+      images,
+      total,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page)
+    });
+  } catch (err) {
+    console.error('Error fetching gallery images:', err);
+    res.status(500).json({ error: 'Failed to fetch gallery images' });
+  }
+});
+
+// Update gallery item
+app.put('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { name, description, category, featured } = req.body;
+    
+    const galleryItem = await Gallery.findByIdAndUpdate(
+      req.params.id,
       {
-        _id: '1',
-        name: 'John Doe',
-        email: 'john@example.com',
-        phone: '1234567890',
-        message: 'I would like to book a wedding photography package',
-        createdAt: new Date(),
-        isRead: false,
-        important: true
+        name,
+        description,
+        category,
+        featured,
+        updatedAt: new Date()
       },
-      {
-        _id: '2',
-        name: 'Jane Smith',
-        email: 'jane@example.com',
-        phone: '9876543210',
-        message: 'Inquiry about product photography rates',
-        createdAt: new Date(Date.now() - 86400000),
-        isRead: true,
-        important: false
-      }
-    ];
+      { new: true }
+    );
     
-    // Filter mock data based on query
-    let inboxMessages = mockInbox;
-    if (filter === 'unread') {
-      inboxMessages = inboxMessages.filter(msg => !msg.isRead);
-    } else if (filter === 'important') {
-      inboxMessages = inboxMessages.filter(msg => msg.important);
+    if (!galleryItem) {
+      return res.status(404).json({ error: 'Gallery item not found' });
     }
     
-    if (search) {
-      const searchRegex = new RegExp(search, 'i');
-      inboxMessages = inboxMessages.filter(msg => 
-        searchRegex.test(msg.name) || 
-        searchRegex.test(msg.email) || 
-        searchRegex.test(msg.message)
-      );
+    res.json({ success: true, image: galleryItem });
+  } catch (err) {
+    console.error('Error updating gallery item:', err);
+    res.status(500).json({ error: 'Failed to update gallery item' });
+  }
+});
+
+// Delete gallery item
+app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const galleryItem = await Gallery.findById(req.params.id);
+    
+    if (!galleryItem) {
+      return res.status(404).json({ error: 'Gallery item not found' });
     }
     
-    res.json({ success: true, messages: inboxMessages });
+    // Delete associated image file
+    if (fs.existsSync(path.join(__dirname, galleryItem.imageUrl))) {
+      fs.unlinkSync(path.join(__dirname, galleryItem.imageUrl));
+    }
+    
+    await galleryItem.remove();
+    
+    res.json({ success: true, message: 'Gallery item deleted successfully' });
   } catch (err) {
-    console.error('Error fetching inbox messages:', err);
-    res.status(500).json({ error: 'Failed to fetch inbox messages' });
-  }
-});
-
-// Mark inbox message as read
-app.patch('/api/admin/inbox/:id/read', authenticateAdmin, async (req, res) => {
-  try {
-    // In a real app, you would update the message in your database
-    res.json({ success: true, message: 'Message marked as read' });
-  } catch (err) {
-    console.error('Error marking message as read:', err);
-    res.status(500).json({ error: 'Failed to update message status' });
-  }
-});
-
-// Toggle important flag on inbox message
-app.patch('/api/admin/inbox/:id/important', authenticateAdmin, async (req, res) => {
-  try {
-    const { important } = req.body;
-    // In a real app, you would update the message in your database
-    res.json({ success: true, important });
-  } catch (err) {
-    console.error('Error updating message importance:', err);
-    res.status(500).json({ error: 'Failed to update message importance' });
-  }
-});
-
-// Delete inbox message
-app.delete('/api/admin/inbox/:id', authenticateAdmin, async (req, res) => {
-  try {
-    // In a real app, you would delete the message from your database
-    res.json({ success: true, message: 'Message deleted successfully' });
-  } catch (err) {
-    console.error('Error deleting inbox message:', err);
-    res.status(500).json({ error: 'Failed to delete message' });
+    console.error('Error deleting gallery item:', err);
+    res.status(500).json({ error: 'Failed to delete gallery item' });
   }
 });
 
@@ -886,11 +845,9 @@ app.get('/api/admin/settings', authenticateAdmin, async (req, res) => {
   try {
     const settings = await Settings.findOne();
     if (!settings) {
-      // Create default settings if none exist
-      const defaultSettings = new Settings();
-      await defaultSettings.save();
-      return res.json({ success: true, settings: defaultSettings });
+      return res.status(404).json({ error: 'Settings not found' });
     }
+    
     res.json({ success: true, settings });
   } catch (err) {
     console.error('Error fetching settings:', err);
@@ -903,12 +860,16 @@ app.put('/api/admin/settings/general', authenticateAdmin, async (req, res) => {
   try {
     const { siteName, siteDescription, contactEmail, contactPhone } = req.body;
     
-    const settings = await Settings.findOneAndUpdate({}, {
-      siteName,
-      siteDescription,
-      contactEmail,
-      contactPhone
-    }, { new: true, upsert: true });
+    const settings = await Settings.findOneAndUpdate(
+      {},
+      {
+        siteName,
+        siteDescription,
+        contactEmail,
+        contactPhone
+      },
+      { new: true, upsert: true }
+    );
     
     res.json({ success: true, settings });
   } catch (err) {
@@ -922,11 +883,15 @@ app.put('/api/admin/settings/booking', authenticateAdmin, async (req, res) => {
   try {
     const { bookingLeadTime, maxBookingsPerDay, cancellationPolicy } = req.body;
     
-    const settings = await Settings.findOneAndUpdate({}, {
-      bookingLeadTime,
-      maxBookingsPerDay,
-      cancellationPolicy
-    }, { new: true, upsert: true });
+    const settings = await Settings.findOneAndUpdate(
+      {},
+      {
+        bookingLeadTime,
+        maxBookingsPerDay,
+        cancellationPolicy
+      },
+      { new: true, upsert: true }
+    );
     
     res.json({ success: true, settings });
   } catch (err) {
@@ -940,17 +905,21 @@ app.put('/api/admin/settings/email', authenticateAdmin, async (req, res) => {
   try {
     const { smtpHost, smtpPort, smtpUser, smtpPass, fromEmail } = req.body;
     
-    const settings = await Settings.findOneAndUpdate({}, {
-      smtpHost,
-      smtpPort,
-      smtpUser,
-      smtpPass,
-      fromEmail
-    }, { new: true, upsert: true });
+    const settings = await Settings.findOneAndUpdate(
+      {},
+      {
+        smtpHost,
+        smtpPort,
+        smtpUser,
+        smtpPass,
+        fromEmail
+      },
+      { new: true, upsert: true }
+    );
     
-    // Update transporter if SMTP settings changed
+    // Update transporter if email settings changed
     if (smtpHost && smtpPort && smtpUser && smtpPass) {
-      transporter.close(); // Close existing connections
+      transporter.close();
       Object.assign(transporter, nodemailer.createTransport({
         host: smtpHost,
         port: smtpPort,
@@ -974,16 +943,76 @@ app.put('/api/admin/settings/payment', authenticateAdmin, async (req, res) => {
   try {
     const { currency, paymentMethods, depositPercentage } = req.body;
     
-    const settings = await Settings.findOneAndUpdate({}, {
-      currency,
-      paymentMethods,
-      depositPercentage
-    }, { new: true, upsert: true });
+    const settings = await Settings.findOneAndUpdate(
+      {},
+      {
+        currency,
+        paymentMethods,
+        depositPercentage
+      },
+      { new: true, upsert: true }
+    );
     
     res.json({ success: true, settings });
   } catch (err) {
     console.error('Error updating payment settings:', err);
     res.status(500).json({ error: 'Failed to update payment settings' });
+  }
+});
+
+// ===== SEARCH ROUTES ===== //
+
+// Unified search across all sections
+app.get('/api/admin/search', authenticateAdmin, async (req, res) => {
+  try {
+    const { query } = req.query;
+    
+    if (!query || query.length < 2) {
+      return res.status(400).json({ error: 'Search query must be at least 2 characters' });
+    }
+    
+    const searchRegex = new RegExp(query, 'i');
+    
+    // Search bookings
+    const bookingResults = await Booking.find({
+      $or: [
+        { customerName: searchRegex },
+        { customerEmail: searchRegex },
+        { package: searchRegex },
+        { transactionId: searchRegex },
+        { _id: searchRegex }
+      ]
+    }).limit(5);
+    
+    // Search messages
+    const messageResults = await Message.find({
+      $or: [
+        { userEmail: searchRegex },
+        { subject: searchRegex },
+        { message: searchRegex }
+      ]
+    }).limit(5);
+    
+    // Search gallery
+    const galleryResults = await Gallery.find({
+      $or: [
+        { name: searchRegex },
+        { description: searchRegex },
+        { category: searchRegex }
+      ]
+    }).limit(5);
+    
+    res.json({
+      success: true,
+      results: {
+        bookings: bookingResults,
+        messages: messageResults,
+        gallery: galleryResults
+      }
+    });
+  } catch (err) {
+    console.error('Error performing search:', err);
+    res.status(500).json({ error: 'Failed to perform search' });
   }
 });
 
@@ -1061,8 +1090,7 @@ app.post('/save-booking', async (req, res) => {
       preWeddingDate,
       address,
       transactionId,
-      userId,
-      amount
+      userId
     } = req.body;
 
     const newBooking = new Booking({
@@ -1074,7 +1102,6 @@ app.post('/save-booking', async (req, res) => {
       preWeddingDate,
       address,
       transactionId,
-      amount,
       paymentStatus: 'Paid',
       status: 'pending',
       userId: userId || null
@@ -1120,7 +1147,7 @@ app.post('/save-booking', async (req, res) => {
             <span class="detail-label">Event Dates:</span> ${bookingDates}
           </div>
           <div class="detail-item">
-            <span class="detail-label">Amount Paid:</span> ₹${amount}
+            <span class="detail-label">Advance Payment:</span> ₹${parseInt(package.replace(/[^0-9]/g, '')) * 0.1}
           </div>
           <div class="detail-item">
             <span class="detail-label">Transaction ID:</span> ${transactionId}
@@ -1179,9 +1206,6 @@ app.post('/save-booking', async (req, res) => {
           </div>
           <div class="detail-item">
             <span class="detail-label">Event Dates:</span> ${bookingDates}
-          </div>
-          <div class="detail-item">
-            <span class="detail-label">Amount:</span> ₹${amount}
           </div>
           <div class="detail-item">
             <span class="detail-label">Transaction ID:</span> ${transactionId}
@@ -1283,6 +1307,33 @@ app.post('/contact-submit', (req, res) => {
     console.log('Email sent:', info.response);
     return res.status(200).json({ message: 'Your message has been sent successfully!' });
   });
+});
+
+// ===== PUBLIC GALLERY ROUTES ===== //
+
+// Get gallery images for public website
+app.get('/api/gallery', async (req, res) => {
+  try {
+    const { category, featured, limit = 12 } = req.query;
+    let query = {};
+    
+    if (category) {
+      query.category = category;
+    }
+    
+    if (featured === 'true') {
+      query.featured = true;
+    }
+    
+    const images = await Gallery.find(query)
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit));
+    
+    res.json({ success: true, images });
+  } catch (err) {
+    console.error('Error fetching public gallery:', err);
+    res.status(500).json({ error: 'Failed to fetch gallery images' });
+  }
 });
 
 // Serve uploaded files
