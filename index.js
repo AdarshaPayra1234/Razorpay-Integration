@@ -883,11 +883,11 @@ app.get('/api/admin/inbox', authenticateAdmin, async (req, res) => {
           contentType: att.contentType,
           size: att.size
         }))
-      }),
+      })),  // Fixed: Added missing parenthesis here
       total,
       totalPages: Math.ceil(total / limit),
       currentPage: parseInt(page)
-    });
+    });  // Fixed: Properly closed the response object
   } catch (err) {
     console.error('Error fetching inbox:', err);
     res.status(500).json({ 
