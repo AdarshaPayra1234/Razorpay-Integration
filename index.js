@@ -682,64 +682,69 @@ app.delete('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
 // Add this to your existing backend code (don't remove anything else)
 
 // Enhanced IMAP Email Fetching Function
-// Corrected IMAP Email Fetching Function
 async function fetchEmailsFromIMAP() {
   try {
     const settings = await Settings.findOne();
     if (!settings) {
-      throw new Error('Settings not configured');
+      console.error('IMAP Settings not found');
+      return [];
     }
 
     return new Promise((resolve, reject) => {
       const imapConfig = {
-        user: settings.imapUser || process.env.EMAIL_USER,
-        password: settings.imapPass || process.env.EMAIL_PASS,
-        host: settings.imapHost || 'imap.hostinger.com',
-        port: settings.imapPort || 993,
+        user: settings.imapUser,
+        password: settings.imapPass,
+        host: settings.imapHost,
+        port: settings.imapPort,
         tls: true,
         tlsOptions: { rejectUnauthorized: false },
-        authTimeout: 10000
+        authTimeout: 30000
       };
 
       const imapConnection = new imap(imapConfig);
-      const emails = [];
+      let emails = [];
 
       imapConnection.once('ready', () => {
-        imapConnection.openBox('INBOX', true, (err, box) => {
-          if (err) return reject(err);
+        imapConnection.openBox('INBOX', false, (err, box) => {
+          if (err) {
+            console.error('Error opening INBOX:', err);
+            imapConnection.end();
+            return reject(err);
+          }
 
-          const searchCriteria = ['ALL'];
-          const fetchOptions = { 
-            bodies: ['HEADER', 'TEXT'],
-            struct: true 
-          };
+          // Fetch only unseen messages to avoid duplicates
+          imapConnection.search(['UNSEEN'], (err, results) => {
+            if (err) {
+              console.error('Search error:', err);
+              imapConnection.end();
+              return reject(err);
+            }
 
-          imapConnection.search(searchCriteria, (err, results) => {
-            if (err) return reject(err);
-            
             if (results.length === 0) {
+              console.log('No new emails found');
               imapConnection.end();
               return resolve([]);
             }
 
-            const fetch = imapConnection.fetch(results, fetchOptions);
-            let emailBuffer = '';
+            const fetch = imapConnection.fetch(results, { 
+              bodies: ['HEADER', 'TEXT'],
+              struct: true 
+            });
 
             fetch.on('message', (msg) => {
-              const email = { attachments: [] };
-
+              let email = { headers: {}, text: '', attachments: [] };
+              
               msg.on('body', (stream, info) => {
+                let buffer = '';
                 stream.on('data', (chunk) => {
-                  emailBuffer += chunk.toString('utf8');
+                  buffer += chunk.toString('utf8');
                 });
-
                 stream.on('end', () => {
                   if (info.which === 'HEADER') {
-                    email.headers = imap.parseHeader(emailBuffer);
+                    email.headers = imap.parseHeader(buffer);
                   } else if (info.which === 'TEXT') {
-                    email.text = emailBuffer;
+                    email.text = buffer;
                   }
-                  emailBuffer = '';
                 });
               });
 
@@ -756,11 +761,13 @@ async function fetchEmailsFromIMAP() {
             });
 
             fetch.once('error', (err) => {
+              console.error('Fetch error:', err);
               imapConnection.end();
               reject(err);
             });
 
             fetch.once('end', () => {
+              console.log(`Fetched ${emails.length} emails`);
               imapConnection.end();
               resolve(emails);
             });
@@ -784,20 +791,43 @@ async function fetchEmailsFromIMAP() {
 // Enhanced Email Sync Endpoint
 app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
   try {
+    console.log('[SYNC] Starting email synchronization process...');
+    
+    // Step 1: Fetch emails from IMAP
+    console.log('[SYNC] Fetching emails from IMAP server...');
     const emails = await fetchEmailsFromIMAP();
+    console.log(`[SYNC] Found ${emails.length} emails in IMAP inbox`);
+    
     const savedMessages = [];
+    let skippedCount = 0;
+    let errorCount = 0;
 
-    for (const email of emails) {
+    // Step 2: Process each email
+    for (const [index, email] of emails.entries()) {
       try {
+        console.log(`[SYNC] Processing email ${index + 1}/${emails.length} (Message ID: ${email.messageId})`);
+        
+        // Parse the email
+        console.log('[SYNC] Parsing email content...');
         const parsed = await simpleParser(email.text);
         
-        // Skip if message already exists
+        // Check for existing message
+        console.log('[SYNC] Checking if message already exists in database...');
         const existingMessage = await Message.findOne({ messageId: email.messageId });
-        if (existingMessage) continue;
+        if (existingMessage) {
+          console.log(`[SYNC] Message ${email.messageId} already exists, skipping...`);
+          skippedCount++;
+          continue;
+        }
 
+        // Prepare new message
+        console.log('[SYNC] Creating new message document...');
+        const fromAddress = parsed.from?.value?.[0]?.address || parsed.from?.text || 'unknown';
+        const subject = parsed.subject || 'No Subject';
+        
         const newMessage = new Message({
-          userEmail: parsed.from?.value?.[0]?.address || parsed.from?.text || 'unknown',
-          subject: parsed.subject || 'No Subject',
+          userEmail: fromAddress,
+          subject: subject,
           message: parsed.text || parsed.html || '',
           isHtml: !!parsed.html,
           isIncoming: true,
@@ -806,46 +836,75 @@ app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
           messageId: email.messageId
         });
 
-        // Handle attachments
+        // Handle attachments if present
         if (parsed.attachments && parsed.attachments.length > 0) {
+          console.log(`[SYNC] Found ${parsed.attachments.length} attachments`);
           const uploadDir = path.join(__dirname, 'uploads', 'attachments');
+          
           if (!fs.existsSync(uploadDir)) {
+            console.log('[SYNC] Creating attachments directory...');
             fs.mkdirSync(uploadDir, { recursive: true });
           }
 
           for (const attachment of parsed.attachments) {
-            const filename = `${Date.now()}-${attachment.filename || 'attachment'}`;
-            const filePath = path.join(uploadDir, filename);
-            
-            fs.writeFileSync(filePath, attachment.content);
-            
-            newMessage.attachments.push({
-              filename: attachment.filename || 'file',
-              path: filePath,
-              contentType: attachment.contentType || 'application/octet-stream',
-              size: attachment.size || 0
-            });
+            try {
+              const filename = `${Date.now()}-${attachment.filename || 'attachment'}`;
+              const filePath = path.join(uploadDir, filename);
+              
+              console.log(`[SYNC] Saving attachment: ${filename}`);
+              fs.writeFileSync(filePath, attachment.content);
+              
+              newMessage.attachments.push({
+                filename: attachment.filename || 'file',
+                path: filePath,
+                contentType: attachment.contentType || 'application/octet-stream',
+                size: attachment.size || 0
+              });
+            } catch (attachmentError) {
+              console.error('[SYNC] Error saving attachment:', attachmentError);
+              errorCount++;
+            }
           }
         }
 
+        // Save the message
+        console.log('[SYNC] Saving message to database...');
         await newMessage.save();
         savedMessages.push(newMessage);
-      } catch (parseErr) {
-        console.error('Error processing email:', parseErr);
+        console.log(`[SYNC] Message saved successfully (ID: ${newMessage._id})`);
+
+      } catch (emailError) {
+        console.error(`[SYNC] Error processing email ${index + 1}:`, emailError);
+        errorCount++;
       }
     }
+
+    // Final summary
+    console.log('[SYNC] Synchronization completed:');
+    console.log(`- Total emails processed: ${emails.length}`);
+    console.log(`- New messages saved: ${savedMessages.length}`);
+    console.log(`- Existing messages skipped: ${skippedCount}`);
+    console.log(`- Errors encountered: ${errorCount}`);
 
     res.json({ 
       success: true, 
       message: `Synced ${savedMessages.length} new emails`,
+      stats: {
+        totalProcessed: emails.length,
+        newMessages: savedMessages.length,
+        skipped: skippedCount,
+        errors: errorCount
+      },
       newMessages: savedMessages
     });
+
   } catch (err) {
-    console.error('Error in email sync:', err);
+    console.error('[SYNC] Critical synchronization error:', err);
     res.status(500).json({ 
       success: false,
       error: 'Failed to sync emails',
-      details: err.message 
+      details: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
   }
 });
