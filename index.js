@@ -684,22 +684,19 @@ app.delete('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
 // Enhanced IMAP Email Fetching Function
 async function fetchEmailsFromIMAP() {
   try {
+    console.log("[IMAP] Starting email fetch...");
     const settings = await Settings.findOne();
-    if (!settings) {
-      console.error('IMAP Settings not found');
-      return [];
-    }
+    if (!settings) throw new Error('Settings not found');
 
     return new Promise((resolve, reject) => {
-      const imapConfig = {
+      const imapConnection = new imap({
         user: settings.imapUser,
         password: settings.imapPass,
         host: settings.imapHost,
         port: settings.imapPort,
         tls: true,
-        tlsOptions: { rejectUnauthorized: false },
-        authTimeout: 30000
-      };
+        debug: console.log // Add verbose logging
+      });
 
       const imapConnection = new imap(imapConfig);
       let emails = [];
@@ -783,7 +780,7 @@ async function fetchEmailsFromIMAP() {
       imapConnection.connect();
     });
   } catch (err) {
-    console.error('Error in fetchEmailsFromIMAP:', err);
+    console.error("[IMAP] Critical error:", err);
     throw err;
   }
 }
