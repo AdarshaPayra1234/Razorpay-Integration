@@ -689,11 +689,14 @@ async function fetchEmailsFromIMAP() {
       throw new Error('IMAP settings not found in database');
     }
 
+    if (!settings.imapUser || !settings.imapPass) {
+      throw new Error('IMAP credentials not configured');
+    }
+
     return new Promise((resolve, reject) => {
-      // Declare imapConnection only once here
       const imapConn = new imap({
-        user: settings.imapUser || process.env.EMAIL_USER,
-        password: settings.imapPass || process.env.EMAIL_PASS,
+        user: settings.imapUser,
+        password: settings.imapPass,
         host: settings.imapHost || 'imap.hostinger.com',
         port: settings.imapPort || 993,
         tls: true,
@@ -706,16 +709,23 @@ async function fetchEmailsFromIMAP() {
 
       imapConn.once('ready', () => {
         imapConn.openBox('INBOX', false, (err, box) => {
-          if (err) return reject(err);
+          if (err) {
+            imapConn.end();
+            return reject(err);
+          }
 
-          const searchCriteria = ['ALL'];
+          const searchCriteria = ['UNSEEN']; // Only fetch unread messages
           const fetchOptions = {
             bodies: ['HEADER', 'TEXT'],
-            struct: true
+            struct: true,
+            markSeen: false // Don't mark messages as seen
           };
 
           imapConn.search(searchCriteria, (err, results) => {
-            if (err) return reject(err);
+            if (err) {
+              imapConn.end();
+              return reject(err);
+            }
             
             if (results.length === 0) {
               imapConn.end();
@@ -796,6 +806,16 @@ app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
   try {
     console.log('[SYNC] Starting email synchronization process...');
     
+    // First verify IMAP settings exist
+    const settings = await Settings.findOne();
+    if (!settings || !settings.imapUser || !settings.imapPass) {
+      return res.status(400).json({
+        success: false,
+        error: 'IMAP settings not configured',
+        message: 'Please configure your IMAP settings in the admin panel'
+      });
+    }
+
     // Step 1: Fetch emails from IMAP
     console.log('[SYNC] Fetching emails from IMAP server...');
     const emails = await fetchEmailsFromIMAP();
@@ -808,7 +828,7 @@ app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
     // Step 2: Process each email
     for (const [index, email] of emails.entries()) {
       try {
-        console.log(`[SYNC] Processing email ${index + 1}/${emails.length} (Message ID: ${email.messageId})`);
+        console.log(`[SYNC] Processing email ${index + 1}/${emails.length}`);
         
         // Parse the email
         console.log('[SYNC] Parsing email content...');
@@ -816,9 +836,19 @@ app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
         
         // Check for existing message
         console.log('[SYNC] Checking if message already exists in database...');
-        const existingMessage = await Message.findOne({ messageId: email.messageId });
+        const existingMessage = await Message.findOne({ 
+          $or: [
+            { messageId: email.messageId },
+            { 
+              from: parsed.from?.text,
+              subject: parsed.subject,
+              date: parsed.date 
+            }
+          ]
+        });
+        
         if (existingMessage) {
-          console.log(`[SYNC] Message ${email.messageId} already exists, skipping...`);
+          console.log(`[SYNC] Message already exists, skipping...`);
           skippedCount++;
           continue;
         }
@@ -903,9 +933,17 @@ app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
 
   } catch (err) {
     console.error('[SYNC] Critical synchronization error:', err);
+    
+    let errorMessage = 'Failed to sync emails';
+    if (err.code === 'ECONNECTION') {
+      errorMessage = 'Could not connect to IMAP server. Check your network and server settings.';
+    } else if (err.code === 'EAUTH') {
+      errorMessage = 'IMAP authentication failed. Check your email credentials.';
+    }
+    
     res.status(500).json({ 
       success: false,
-      error: 'Failed to sync emails',
+      error: errorMessage,
       details: err.message,
       stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
