@@ -682,6 +682,7 @@ app.delete('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
 // Add this to your existing backend code (don't remove anything else)
 
 // Enhanced IMAP Email Fetching Function
+// Corrected IMAP Email Fetching Function
 async function fetchEmailsFromIMAP() {
   try {
     const settings = await Settings.findOne();
@@ -707,7 +708,6 @@ async function fetchEmailsFromIMAP() {
         imapConnection.openBox('INBOX', true, (err, box) => {
           if (err) return reject(err);
 
-          // Fetch all emails (not just unseen)
           const searchCriteria = ['ALL'];
           const fetchOptions = { 
             bodies: ['HEADER', 'TEXT'],
