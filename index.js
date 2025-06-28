@@ -257,89 +257,103 @@ const authenticateAdmin = async (req, res, next) => {
 // ===== INBOX ROUTES ===== //
 
 // Fetch emails from IMAP server
+// [Previous code remains the same until the fetchEmailsFromIMAP function]
+
+// Fetch emails from IMAP server
 async function fetchEmailsFromIMAP() {
-  return new Promise((resolve, reject) => {
+  try {
     const settings = await Settings.findOne();
     if (!settings) {
-      return reject(new Error('Settings not found'));
+      throw new Error('Settings not found');
     }
 
-    const imapConfig = {
-      user: settings.imapUser || process.env.EMAIL_USER,
-      password: settings.imapPass || process.env.EMAIL_PASS,
-      host: settings.imapHost || 'imap.hostinger.com',
-      port: settings.imapPort || 993,
-      tls: true,
-      tlsOptions: { rejectUnauthorized: false }
-    };
+    return new Promise((resolve, reject) => {
+      const imapConfig = {
+        user: settings.imapUser || process.env.EMAIL_USER,
+        password: settings.imapPass || process.env.EMAIL_PASS,
+        host: settings.imapHost || 'imap.hostinger.com',
+        port: settings.imapPort || 993,
+        tls: true,
+        tlsOptions: { rejectUnauthorized: false }
+      };
 
-    const imapConnection = new imap(imapConfig);
-    const emails = [];
+      const imapConnection = new imap(imapConfig);
+      const emails = [];
 
-    imapConnection.once('ready', () => {
-      imapConnection.openBox('INBOX', false, (err, box) => {
-        if (err) return reject(err);
-
-        const searchCriteria = ['UNSEEN'];
-        const fetchOptions = {
-          bodies: ['HEADER', 'TEXT', ''],
-          struct: true
-        };
-
-        imapConnection.search(searchCriteria, (err, results) => {
+      imapConnection.once('ready', () => {
+        imapConnection.openBox('INBOX', false, (err, box) => {
           if (err) return reject(err);
-          if (results.length === 0) return resolve([]);
 
-          const fetch = imapConnection.fetch(results, fetchOptions);
-          
-          fetch.on('message', (msg) => {
-            const email = { attachments: [] };
+          const searchCriteria = ['UNSEEN'];
+          const fetchOptions = {
+            bodies: ['HEADER', 'TEXT', ''],
+            struct: true
+          };
+
+          imapConnection.search(searchCriteria, (err, results) => {
+            if (err) return reject(err);
+            if (results.length === 0) {
+              imapConnection.end();
+              return resolve([]);
+            }
+
+            const fetch = imapConnection.fetch(results, fetchOptions);
             
-            msg.on('body', (stream, info) => {
-              let buffer = '';
-              stream.on('data', (chunk) => {
-                buffer += chunk.toString('utf8');
+            fetch.on('message', (msg) => {
+              const email = { attachments: [] };
+              
+              msg.on('body', (stream, info) => {
+                let buffer = '';
+                stream.on('data', (chunk) => {
+                  buffer += chunk.toString('utf8');
+                });
+                stream.on('end', () => {
+                  if (info.which === 'HEADER') {
+                    email.headers = imap.parseHeader(buffer);
+                  } else if (info.which === 'TEXT') {
+                    email.text = buffer;
+                  }
+                });
               });
-              stream.on('end', () => {
-                if (info.which === 'HEADER') {
-                  email.headers = imap.parseHeader(buffer);
-                } else if (info.which === 'TEXT') {
-                  email.text = buffer;
-                }
+
+              msg.once('attributes', (attrs) => {
+                email.uid = attrs.uid;
+                email.flags = attrs.flags;
+                email.date = attrs.date;
+                email.messageId = attrs['x-gm-msgid'] || attrs.uid;
+              });
+
+              msg.once('end', () => {
+                emails.push(email);
               });
             });
 
-            msg.once('attributes', (attrs) => {
-              email.uid = attrs.uid;
-              email.flags = attrs.flags;
-              email.date = attrs.date;
-              email.messageId = attrs['x-gm-msgid'] || attrs.uid;
+            fetch.once('error', (err) => {
+              imapConnection.end();
+              reject(err);
             });
 
-            msg.once('end', () => {
-              emails.push(email);
+            fetch.once('end', () => {
+              imapConnection.end();
+              resolve(emails);
             });
-          });
-
-          fetch.once('error', (err) => {
-            reject(err);
-          });
-
-          fetch.once('end', () => {
-            imapConnection.end();
-            resolve(emails);
           });
         });
       });
-    });
 
-    imapConnection.once('error', (err) => {
-      reject(err);
-    });
+      imapConnection.once('error', (err) => {
+        reject(err);
+      });
 
-    imapConnection.connect();
-  });
+      imapConnection.connect();
+    });
+  } catch (err) {
+    console.error('Error in fetchEmailsFromIMAP:', err);
+    throw err;
+  }
 }
+
+// [Rest of the code remains the same]
 
 // Sync incoming emails with database
 app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
