@@ -679,11 +679,14 @@ app.delete('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
 
 // ===== INBOX ROUTES ===== //
 
+// Add this to your existing backend code (don't remove anything else)
+
+// Enhanced IMAP Email Fetching Function
 async function fetchEmailsFromIMAP() {
   try {
     const settings = await Settings.findOne();
     if (!settings) {
-      throw new Error('Settings not found');
+      throw new Error('Settings not configured');
     }
 
     return new Promise((resolve, reject) => {
@@ -693,45 +696,50 @@ async function fetchEmailsFromIMAP() {
         host: settings.imapHost || 'imap.hostinger.com',
         port: settings.imapPort || 993,
         tls: true,
-        tlsOptions: { rejectUnauthorized: false }
+        tlsOptions: { rejectUnauthorized: false },
+        authTimeout: 10000
       };
 
       const imapConnection = new imap(imapConfig);
       const emails = [];
 
       imapConnection.once('ready', () => {
-        imapConnection.openBox('INBOX', false, (err, box) => {
+        imapConnection.openBox('INBOX', true, (err, box) => {
           if (err) return reject(err);
 
-          const searchCriteria = ['UNSEEN'];
-          const fetchOptions = {
-            bodies: ['HEADER', 'TEXT', ''],
-            struct: true
+          // Fetch all emails (not just unseen)
+          const searchCriteria = ['ALL'];
+          const fetchOptions = { 
+            bodies: ['HEADER', 'TEXT'],
+            struct: true 
           };
 
           imapConnection.search(searchCriteria, (err, results) => {
             if (err) return reject(err);
+            
             if (results.length === 0) {
               imapConnection.end();
               return resolve([]);
             }
 
             const fetch = imapConnection.fetch(results, fetchOptions);
-            
+            let emailBuffer = '';
+
             fetch.on('message', (msg) => {
               const email = { attachments: [] };
-              
+
               msg.on('body', (stream, info) => {
-                let buffer = '';
                 stream.on('data', (chunk) => {
-                  buffer += chunk.toString('utf8');
+                  emailBuffer += chunk.toString('utf8');
                 });
+
                 stream.on('end', () => {
                   if (info.which === 'HEADER') {
-                    email.headers = imap.parseHeader(buffer);
+                    email.headers = imap.parseHeader(emailBuffer);
                   } else if (info.which === 'TEXT') {
-                    email.text = buffer;
+                    email.text = emailBuffer;
                   }
+                  emailBuffer = '';
                 });
               });
 
@@ -761,6 +769,7 @@ async function fetchEmailsFromIMAP() {
       });
 
       imapConnection.once('error', (err) => {
+        console.error('IMAP connection error:', err);
         reject(err);
       });
 
@@ -772,72 +781,80 @@ async function fetchEmailsFromIMAP() {
   }
 }
 
+// Enhanced Email Sync Endpoint
 app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
   try {
     const emails = await fetchEmailsFromIMAP();
     const savedMessages = [];
 
     for (const email of emails) {
-      const parsed = await simpleParser(email.text);
-      
-      const existingMessage = await Message.findOne({ messageId: email.messageId });
-      if (existingMessage) continue;
+      try {
+        const parsed = await simpleParser(email.text);
+        
+        // Skip if message already exists
+        const existingMessage = await Message.findOne({ messageId: email.messageId });
+        if (existingMessage) continue;
 
-      const newMessage = new Message({
-        userEmail: parsed.from.value[0].address,
-        subject: parsed.subject,
-        message: parsed.text || parsed.html,
-        isHtml: !!parsed.html,
-        isIncoming: true,
-        from: parsed.from.text,
-        date: parsed.date,
-        messageId: email.messageId
-      });
+        const newMessage = new Message({
+          userEmail: parsed.from?.value?.[0]?.address || parsed.from?.text || 'unknown',
+          subject: parsed.subject || 'No Subject',
+          message: parsed.text || parsed.html || '',
+          isHtml: !!parsed.html,
+          isIncoming: true,
+          from: parsed.from?.text || 'Unknown Sender',
+          date: parsed.date || new Date(),
+          messageId: email.messageId
+        });
 
-      if (parsed.attachments && parsed.attachments.length > 0) {
-        const uploadDir = path.join(__dirname, 'uploads', 'attachments');
-        if (!fs.existsSync(uploadDir)) {
-          fs.mkdirSync(uploadDir, { recursive: true });
+        // Handle attachments
+        if (parsed.attachments && parsed.attachments.length > 0) {
+          const uploadDir = path.join(__dirname, 'uploads', 'attachments');
+          if (!fs.existsSync(uploadDir)) {
+            fs.mkdirSync(uploadDir, { recursive: true });
+          }
+
+          for (const attachment of parsed.attachments) {
+            const filename = `${Date.now()}-${attachment.filename || 'attachment'}`;
+            const filePath = path.join(uploadDir, filename);
+            
+            fs.writeFileSync(filePath, attachment.content);
+            
+            newMessage.attachments.push({
+              filename: attachment.filename || 'file',
+              path: filePath,
+              contentType: attachment.contentType || 'application/octet-stream',
+              size: attachment.size || 0
+            });
+          }
         }
 
-        for (const attachment of parsed.attachments) {
-          const filename = `${Date.now()}-${attachment.filename}`;
-          const filePath = path.join(uploadDir, filename);
-          
-          fs.writeFileSync(filePath, attachment.content);
-          
-          newMessage.attachments.push({
-            filename: attachment.filename,
-            path: filePath,
-            contentType: attachment.contentType,
-            size: attachment.size
-          });
-        }
+        await newMessage.save();
+        savedMessages.push(newMessage);
+      } catch (parseErr) {
+        console.error('Error processing email:', parseErr);
       }
-
-      await newMessage.save();
-      savedMessages.push(newMessage);
     }
 
     res.json({ 
       success: true, 
-      message: 'Inbox synced successfully',
-      newMessages: savedMessages.length
+      message: `Synced ${savedMessages.length} new emails`,
+      newMessages: savedMessages
     });
   } catch (err) {
-    console.error('Error syncing inbox:', err);
-    res.status(500).json({ error: 'Failed to sync inbox' });
+    console.error('Error in email sync:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to sync emails',
+      details: err.message 
+    });
   }
 });
 
+// Enhanced Inbox Fetching
 app.get('/api/admin/inbox', authenticateAdmin, async (req, res) => {
   try {
-    const { page = 1, limit = 10, unreadOnly, search } = req.query;
+    const { page = 1, limit = 20, search } = req.query;
     let query = { isIncoming: true };
-
-    if (unreadOnly === 'true') {
-      query.isRead = false;
-    }
 
     if (search) {
       const searchRegex = new RegExp(search, 'i');
@@ -859,14 +876,24 @@ app.get('/api/admin/inbox', authenticateAdmin, async (req, res) => {
 
     res.json({
       success: true,
-      messages,
+      messages: messages.map(msg => ({
+        ...msg.toObject(),
+        attachments: msg.attachments.map(att => ({
+          filename: att.filename,
+          contentType: att.contentType,
+          size: att.size
+        }))
+      }),
       total,
       totalPages: Math.ceil(total / limit),
       currentPage: parseInt(page)
     });
   } catch (err) {
-    console.error('Error fetching inbox messages:', err);
-    res.status(500).json({ error: 'Failed to fetch inbox messages' });
+    console.error('Error fetching inbox:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch inbox messages'
+    });
   }
 });
 
