@@ -684,64 +684,62 @@ app.delete('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
 // Enhanced IMAP Email Fetching Function
 async function fetchEmailsFromIMAP() {
   try {
-    console.log("[IMAP] Starting email fetch...");
     const settings = await Settings.findOne();
-    if (!settings) throw new Error('Settings not found');
+    if (!settings) {
+      throw new Error('IMAP settings not found in database');
+    }
 
     return new Promise((resolve, reject) => {
-      const imapConnection = new imap({
-        user: settings.imapUser,
-        password: settings.imapPass,
-        host: settings.imapHost,
-        port: settings.imapPort,
+      // Declare imapConnection only once here
+      const imapConn = new imap({
+        user: settings.imapUser || process.env.EMAIL_USER,
+        password: settings.imapPass || process.env.EMAIL_PASS,
+        host: settings.imapHost || 'imap.hostinger.com',
+        port: settings.imapPort || 993,
         tls: true,
-        debug: console.log // Add verbose logging
+        tlsOptions: { rejectUnauthorized: false },
+        authTimeout: 30000,
+        debug: console.log
       });
 
-      const imapConnection = new imap(imapConfig);
-      let emails = [];
+      const emails = [];
 
-      imapConnection.once('ready', () => {
-        imapConnection.openBox('INBOX', false, (err, box) => {
-          if (err) {
-            console.error('Error opening INBOX:', err);
-            imapConnection.end();
-            return reject(err);
-          }
+      imapConn.once('ready', () => {
+        imapConn.openBox('INBOX', false, (err, box) => {
+          if (err) return reject(err);
 
-          // Fetch only unseen messages to avoid duplicates
-          imapConnection.search(['UNSEEN'], (err, results) => {
-            if (err) {
-              console.error('Search error:', err);
-              imapConnection.end();
-              return reject(err);
-            }
+          const searchCriteria = ['ALL'];
+          const fetchOptions = {
+            bodies: ['HEADER', 'TEXT'],
+            struct: true
+          };
 
+          imapConn.search(searchCriteria, (err, results) => {
+            if (err) return reject(err);
+            
             if (results.length === 0) {
-              console.log('No new emails found');
-              imapConnection.end();
+              imapConn.end();
               return resolve([]);
             }
 
-            const fetch = imapConnection.fetch(results, { 
-              bodies: ['HEADER', 'TEXT'],
-              struct: true 
-            });
+            const fetch = imapConn.fetch(results, fetchOptions);
+            let emailBuffer = '';
 
             fetch.on('message', (msg) => {
-              let email = { headers: {}, text: '', attachments: [] };
-              
+              const email = { attachments: [] };
+
               msg.on('body', (stream, info) => {
-                let buffer = '';
                 stream.on('data', (chunk) => {
-                  buffer += chunk.toString('utf8');
+                  emailBuffer += chunk.toString('utf8');
                 });
+
                 stream.on('end', () => {
                   if (info.which === 'HEADER') {
-                    email.headers = imap.parseHeader(buffer);
+                    email.headers = imap.parseHeader(emailBuffer);
                   } else if (info.which === 'TEXT') {
-                    email.text = buffer;
+                    email.text = emailBuffer;
                   }
+                  emailBuffer = '';
                 });
               });
 
@@ -758,29 +756,27 @@ async function fetchEmailsFromIMAP() {
             });
 
             fetch.once('error', (err) => {
-              console.error('Fetch error:', err);
-              imapConnection.end();
+              imapConn.end();
               reject(err);
             });
 
             fetch.once('end', () => {
-              console.log(`Fetched ${emails.length} emails`);
-              imapConnection.end();
+              imapConn.end();
               resolve(emails);
             });
           });
         });
       });
 
-      imapConnection.once('error', (err) => {
+      imapConn.once('error', (err) => {
         console.error('IMAP connection error:', err);
         reject(err);
       });
 
-      imapConnection.connect();
+      imapConn.connect();
     });
   } catch (err) {
-    console.error("[IMAP] Critical error:", err);
+    console.error('Error in fetchEmailsFromIMAP:', err);
     throw err;
   }
 }
