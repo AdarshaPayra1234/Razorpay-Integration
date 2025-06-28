@@ -780,7 +780,17 @@ async function fetchEmailsFromIMAP() {
     throw err;
   }
 }
-
+// Temporary test route
+app.get('/api/admin/test-imap', authenticateAdmin, async (req, res) => {
+  try {
+    const emails = await fetchEmailsFromIMAP();
+    console.log('Fetched emails:', emails.length);
+    res.json({ success: true, count: emails.length });
+  } catch (err) {
+    console.error('Test failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 // Enhanced Email Sync Endpoint
 app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
   try {
