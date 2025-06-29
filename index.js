@@ -252,6 +252,132 @@ const authenticateAdmin = async (req, res, next) => {
   }
 };
 
+// ===== GMAIL SYNC ROUTES ===== //
+
+// Token verification endpoint (already in your frontend)
+app.post('/api/admin/verify-token', authenticateAdmin, async (req, res) => {
+  try {
+    res.json({ 
+      success: true, 
+      isAdmin: true,
+      admin: req.admin
+    });
+  } catch (err) {
+    console.error('Token verification error:', err);
+    res.status(401).json({ error: 'Invalid token' });
+  }
+});
+
+// Gmail sync endpoint
+app.post('/api/admin/sync-gmail', authenticateAdmin, async (req, res) => {
+  try {
+    const { messages } = req.body;
+    
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: 'Messages array is required' });
+    }
+
+    const savedMessages = [];
+    const skippedMessages = [];
+
+    for (const gmailMessage of messages) {
+      try {
+        // Check if message already exists
+        const existingMessage = await Message.findOne({ 
+          messageId: gmailMessage.id 
+        });
+
+        if (existingMessage) {
+          skippedMessages.push(gmailMessage.id);
+          continue;
+        }
+
+        // Fetch full message details
+        const fullMessage = await gapi.client.gmail.users.messages.get({
+          userId: 'me',
+          id: gmailMessage.id,
+          format: 'full'
+        });
+
+        const messageData = fullMessage.result;
+        const headers = {};
+        messageData.payload.headers.forEach(header => {
+          headers[header.name.toLowerCase()] = header.value;
+        });
+
+        const newMessage = new Message({
+          userEmail: headers['from'],
+          subject: headers['subject'] || '(No Subject)',
+          message: messageData.snippet,
+          isHtml: false, // You can parse this from the message parts
+          isIncoming: true,
+          from: headers['from'],
+          date: new Date(parseInt(messageData.internalDate)),
+          messageId: gmailMessage.id,
+          gmailData: messageData // Store full message data if needed
+        });
+
+        await newMessage.save();
+        savedMessages.push(newMessage);
+      } catch (messageError) {
+        console.error(`Error processing message ${gmailMessage.id}:`, messageError);
+        skippedMessages.push(gmailMessage.id);
+      }
+    }
+
+    res.json({
+      success: true,
+      savedCount: savedMessages.length,
+      skippedCount: skippedMessages.length,
+      savedMessages: savedMessages.map(msg => msg._id),
+      skippedMessages
+    });
+  } catch (err) {
+    console.error('Gmail sync error:', err);
+    res.status(500).json({ 
+      error: 'Failed to sync Gmail messages',
+      details: err.message 
+    });
+  }
+});
+
+// Get synced messages
+app.get('/api/admin/gmail-messages', authenticateAdmin, async (req, res) => {
+  try {
+    const { page = 1, limit = 10, search } = req.query;
+    let query = { isIncoming: true };
+
+    if (search) {
+      const searchRegex = new RegExp(search, 'i');
+      query.$or = [
+        { userEmail: searchRegex },
+        { subject: searchRegex },
+        { message: searchRegex },
+        { from: searchRegex }
+      ];
+    }
+
+    const skip = (page - 1) * limit;
+    const messages = await Message.find(query)
+      .sort({ date: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Message.countDocuments(query);
+
+    res.json({
+      success: true,
+      messages,
+      total,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page)
+    });
+  } catch (err) {
+    console.error('Error fetching Gmail messages:', err);
+    res.status(500).json({ error: 'Failed to fetch messages' });
+  }
+});
+
 // ===== BOOKING ROUTES ===== //
 
 app.get('/api/admin/bookings', authenticateAdmin, async (req, res) => {
