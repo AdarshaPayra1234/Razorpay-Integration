@@ -236,13 +236,41 @@ const authenticateAdmin = async (req, res, next) => {
     const token = authHeader.split(' ')[1];
     if (!token) return res.status(401).json({ error: 'Token missing' });
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (decoded.role !== 'admin') {
-      return res.status(403).json({ error: 'Access denied' });
-    }
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      if (decoded.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+      req.admin = decoded;
+      return next();
+    } catch (tokenError) {
+      if (tokenError.name === 'TokenExpiredError') {
+        // Attempt to refresh token
+        const refreshToken = req.cookies.refreshToken;
+        if (!refreshToken) {
+          return res.status(401).json({ error: 'Token expired and no refresh token available' });
+        }
 
-    req.admin = decoded;
-    next();
+        const refreshDecoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+        const admin = await Admin.findOne({ email: refreshDecoded.email });
+        
+        if (!admin) {
+          return res.status(401).json({ error: 'Invalid refresh token' });
+        }
+
+        const newToken = jwt.sign(
+          { email: admin.email, role: 'admin' },
+          process.env.JWT_SECRET,
+          { expiresIn: '1h' }
+        );
+
+        // Set the new token in the response header
+        res.set('New-Access-Token', newToken);
+        req.admin = refreshDecoded;
+        return next();
+      }
+      throw tokenError;
+    }
   } catch (err) {
     console.error('Admin authentication error:', err);
     if (err.name === 'JsonWebTokenError') {
@@ -375,6 +403,54 @@ app.get('/api/admin/gmail-messages', authenticateAdmin, async (req, res) => {
   } catch (err) {
     console.error('Error fetching Gmail messages:', err);
     res.status(500).json({ error: 'Failed to fetch messages' });
+  }
+});
+// Google OAuth configuration endpoint
+app.get('/api/admin/google-oauth-config', authenticateAdmin, async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      config: {
+        apiKey: process.env.GOOGLE_API_KEY,
+        clientId: process.env.GOOGLE_CLIENT_ID,
+        scope: 'https://www.googleapis.com/auth/gmail.readonly',
+        discoveryDocs: ["https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest"]
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching Google OAuth config:', err);
+    res.status(500).json({ error: 'Failed to fetch OAuth config' });
+  }
+});
+
+// Token refresh endpoint (for frontend)
+app.post('/api/admin/refresh-token', async (req, res) => {
+  try {
+    const refreshToken = req.cookies.refreshToken;
+    if (!refreshToken) {
+      return res.status(401).json({ error: 'Refresh token missing' });
+    }
+
+    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    const admin = await Admin.findOne({ email: decoded.email });
+    
+    if (!admin) {
+      return res.status(401).json({ error: 'Invalid refresh token' });
+    }
+
+    const newToken = jwt.sign(
+      { email: admin.email, role: 'admin' },
+      process.env.JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+
+    res.json({ 
+      success: true, 
+      token: newToken 
+    });
+  } catch (err) {
+    console.error('Token refresh error:', err);
+    res.status(401).json({ error: 'Invalid refresh token' });
   }
 });
 
