@@ -155,12 +155,33 @@ const gmailSyncSchema = new mongoose.Schema({
 
 const GmailSync = mongoose.model('GmailSync', gmailSyncSchema);
 
-app.use(cors({
+const express = require('express');
+const cors = require('cors');
+const app = express();
+
+// 1. First add CORS configuration
+const corsOptions = {
   origin: ['https://jokercreation.store', 'http://localhost:3000'],
-  credentials: true
-}));
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+
+// 2. Apply CORS middleware
+app.use(cors(corsOptions));
+
+// 3. Handle OPTIONS requests for all routes
+app.options('*', cors(corsOptions));
+
+// 4. Then add other middleware
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
+
+// 5. Then your routes
+app.use('/api', require('./routes'));
+
+// ... rest of your server code
 
 // Razorpay Setup
 const razorpayInstance = new Razorpay({
