@@ -323,52 +323,47 @@ const authenticateAdmin = async (req, res, next) => {
   }
 };
 
-const outlookRoutes = require('./routes/outlook');
-app.use('/api/outlook', outlookRoutes);
 
-// IMAP Configuration from .env
-const imapConfig = {
-  user: process.env.OUTLOOK_EMAIL,       // contact@jokercreation.store
-  password: process.env.OUTLOOK_PASSWORD, // Your Hostinger email password
-  host: 'imap.hostinger.com',            // Hostinger IMAP server
-  port: 993,
-  tls: true,
-  authTimeout: 10000
-};
 
-// Sync emails endpoint
-router.get('/sync', async (req, res) => {
+// Outlook Sync Route
+app.get('/api/outlook/sync', authenticateAdmin, async (req, res) => {
   try {
-    const imap = new Imap(imapConfig);
+    const imap = new Imap({
+      user: process.env.OUTLOOK_EMAIL,
+      password: process.env.OUTLOOK_PASSWORD,
+      host: 'imap.hostinger.com',
+      port: 993,
+      tls: true,
+      authTimeout: 10000
+    });
+
     const emails = [];
 
     imap.once('ready', () => {
       imap.openBox('INBOX', false, (err, box) => {
-        if (err) throw err;
-
-        const fetchOptions = { 
-          bodies: ['HEADER', 'TEXT'], 
-          markSeen: false 
-        };
+        if (err) throw new Error('Failed to open mailbox');
 
         imap.search(['UNSEEN'], (err, results) => {
-          if (err) throw err;
+          if (err) throw new Error('Email search failed');
 
-          const fetch = imap.fetch(results, fetchOptions);
-          
+          const fetch = imap.fetch(results, {
+            bodies: ['HEADER', 'TEXT'],
+            markSeen: false
+          });
+
           fetch.on('message', msg => {
             let email = {};
             msg.on('body', stream => {
               simpleParser(stream, (err, parsed) => {
                 email = {
-                  from: parsed.from?.value[0]?.address || parsed.from?.text,
-                  subject: parsed.subject,
-                  text: parsed.text,
-                  date: parsed.date
+                  from: parsed.from?.value[0]?.address || parsed.from?.text || 'Unknown',
+                  subject: parsed.subject || 'No Subject',
+                  text: parsed.text || '',
+                  date: parsed.date || new Date()
                 };
               });
             });
-            
+
             msg.once('end', () => {
               emails.push(email);
             });
@@ -387,14 +382,15 @@ router.get('/sync', async (req, res) => {
     });
 
     imap.connect();
-    
+
   } catch (err) {
     console.error('Outlook sync error:', err);
-    res.status(500).json({ error: 'Failed to sync emails' });
+    res.status(500).json({ 
+      error: 'Failed to sync emails',
+      details: err.message 
+    });
   }
 });
-
-module.exports = router;
 
 // ===== GMAIL SYNC ROUTES ===== //
 
