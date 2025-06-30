@@ -323,60 +323,75 @@ const authenticateAdmin = async (req, res, next) => {
   }
 };
 
+const outlookRoutes = require('./routes/outlook');
+app.use('/api/outlook', outlookRoutes);
+
 // IMAP Configuration from .env
 const imapConfig = {
   user: process.env.OUTLOOK_EMAIL,       // contact@jokercreation.store
-  password: process.env.OUTLOOK_PASSWORD, // Hostinger email password
-  host: process.env.OUTLOOK_IMAP_HOST,   // imap.hostinger.com
+  password: process.env.OUTLOOK_PASSWORD, // Your Hostinger email password
+  host: 'imap.hostinger.com',            // Hostinger IMAP server
   port: 993,
   tls: true,
   authTimeout: 10000
 };
 
-// Fetch emails from Outlook/Hostinger
-router.get('/sync', authenticateAdmin, (req, res) => {
-  const imap = new Imap(imapConfig);
-  const emails = [];
+// Sync emails endpoint
+router.get('/sync', async (req, res) => {
+  try {
+    const imap = new Imap(imapConfig);
+    const emails = [];
 
-  imap.once('ready', () => {
-    imap.openBox('INBOX', false, (err, box) => {
-      if (err) throw err;
-
-      const searchCriteria = ['UNSEEN'];
-      const fetchOptions = { bodies: ['HEADER', 'TEXT'], markSeen: false };
-
-      imap.search(searchCriteria, (err, results) => {
+    imap.once('ready', () => {
+      imap.openBox('INBOX', false, (err, box) => {
         if (err) throw err;
 
-        const fetch = imap.fetch(results, fetchOptions);
-        fetch.on('message', msg => {
-          let email = {};
-          msg.on('body', stream => {
-            simpleParser(stream, (err, parsed) => {
-              email = {
-                from: parsed.from?.value[0]?.address || parsed.from?.text,
-                subject: parsed.subject,
-                text: parsed.text,
-                date: parsed.date
-              };
+        const fetchOptions = { 
+          bodies: ['HEADER', 'TEXT'], 
+          markSeen: false 
+        };
+
+        imap.search(['UNSEEN'], (err, results) => {
+          if (err) throw err;
+
+          const fetch = imap.fetch(results, fetchOptions);
+          
+          fetch.on('message', msg => {
+            let email = {};
+            msg.on('body', stream => {
+              simpleParser(stream, (err, parsed) => {
+                email = {
+                  from: parsed.from?.value[0]?.address || parsed.from?.text,
+                  subject: parsed.subject,
+                  text: parsed.text,
+                  date: parsed.date
+                };
+              });
+            });
+            
+            msg.once('end', () => {
+              emails.push(email);
             });
           });
-          msg.once('end', () => emails.push(email));
-        });
 
-        fetch.once('end', () => {
-          imap.end();
-          res.json({ messages: emails });
+          fetch.once('end', () => {
+            imap.end();
+            res.json({ messages: emails });
+          });
         });
       });
     });
-  });
 
-  imap.once('error', err => {
-    res.status(500).json({ error: 'IMAP error: ' + err.message });
-  });
+    imap.once('error', err => {
+      throw err;
+    });
 
-  imap.connect();
+    imap.connect();
+    
+  } catch (err) {
+    console.error('Outlook sync error:', err);
+    res.status(500).json({ error: 'Failed to sync emails' });
+  }
 });
 
 module.exports = router;
