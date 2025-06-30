@@ -12,6 +12,15 @@ const path = require('path');
 const fs = require('fs');
 const imap = require('imap');
 const { google } = require('googleapis');
+require('dotenv').config();
+const { Client } = require('@microsoft/microsoft-graph-client');
+const { ClientSecretCredential } = require('@azure/identity');
+// Use your existing registration details
+const credential = new ClientSecretCredential(
+  process.env.MS_TENANT_ID,      // '6b193320-9c27-4df8-babd-6f8f43cf7e22'
+  process.env.MS_CLIENT_ID,      // '5348d1ae-6a95-481e-a996-8ffa7a8ff3a6'
+  process.env.MS_CLIENT_SECRET   // Paste the secret from Step 1
+);
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
@@ -30,6 +39,17 @@ mongoose.connect(process.env.MONGODB_URI, {
 })
 .then(() => console.log('Connected to MongoDB Atlas (booking_db)'))
 .catch((err) => console.error('MongoDB connection error:', err));
+
+const client = Client.initWithMiddleware({
+  authProvider: {
+    getAccessToken: async () => {
+      const token = await credential.getToken([
+        'https://graph.microsoft.com/.default'
+      ]);
+      return token.token;
+    }
+  }
+});
 
 // Enhanced Booking Schema
 const bookingSchema = new mongoose.Schema({
@@ -323,6 +343,18 @@ app.post('/api/admin/verify-token', authenticateAdmin, async (req, res) => {
 // ... (your existing admin login and authenticateAdmin middleware code remains here) ...
 
 // ===== GMAIL SYNC ROUTES ===== //
+// Fetch emails without user login
+app.get('/api/emails', async (req, res) => {
+  try {
+    const emails = await client
+      .api('/me/messages')
+      .top(25)
+      .get();
+    res.json(emails);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Add this new route here
 app.get('/api/gmail/sync', authenticateAdmin, async (req, res) => {
