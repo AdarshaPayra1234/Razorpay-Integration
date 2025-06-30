@@ -327,7 +327,9 @@ const authenticateAdmin = async (req, res, next) => {
 
 // Outlook Sync Route
 app.get('/api/outlook/sync', authenticateAdmin, async (req, res) => {
+  console.log('Sync endpoint hit'); // Add this
   try {
+    console.log('Attempting IMAP connection...'); // Add this
     const imap = new Imap({
       user: process.env.OUTLOOK_EMAIL,
       password: process.env.OUTLOOK_PASSWORD,
@@ -384,13 +386,15 @@ app.get('/api/outlook/sync', authenticateAdmin, async (req, res) => {
     imap.connect();
 
   } catch (err) {
-    console.error('Outlook sync error:', err);
+    console.error('Full sync error:', err); // Enhanced logging
     res.status(500).json({ 
       error: 'Failed to sync emails',
-      details: err.message 
+      details: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
   }
 });
+
 
 // ===== GMAIL SYNC ROUTES ===== //
 
