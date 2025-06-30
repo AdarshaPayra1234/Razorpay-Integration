@@ -11,6 +11,13 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const imap = require('imap');
+const { google } = require('googleapis');
+const oauth2Client = new google.auth.OAuth2(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET,
+  process.env.GOOGLE_REDIRECT_URI
+);
+const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 const { simpleParser } = require('mailparser');
 
 const app = express();
@@ -111,6 +118,21 @@ const Message = mongoose.model('Message', messageSchema);
 const Admin = mongoose.model('Admin', adminSchema);
 const Gallery = mongoose.model('Gallery', gallerySchema);
 const Settings = mongoose.model('Settings', settingsSchema);
+// Gmail Sync Schema
+const gmailSyncSchema = new mongoose.Schema({
+  email: { type: String, required: true },
+  subject: String,
+  snippet: String,
+  from: String,
+  date: { type: Date, default: Date.now },
+  messageId: { type: String, required: true, unique: true },
+  labels: [String],
+  isRead: { type: Boolean, default: false },
+  isStarred: { type: Boolean, default: false },
+  syncedAt: { type: Date, default: Date.now }
+});
+
+const GmailSync = mongoose.model('GmailSync', gmailSyncSchema);
 
 app.use(cors({
   origin: ['https://jokercreation.store', 'http://localhost:3000'],
@@ -296,76 +318,163 @@ app.post('/api/admin/verify-token', authenticateAdmin, async (req, res) => {
   }
 });
 
-// Gmail sync endpoint
-app.post('/api/admin/sync-gmail', authenticateAdmin, async (req, res) => {
+// ===== AUTHENTICATION ROUTES ===== //
+
+// ... (your existing admin login and authenticateAdmin middleware code remains here) ...
+
+// ===== GMAIL SYNC ROUTES ===== //
+
+// Add this new route here
+app.get('/api/gmail/sync', authenticateAdmin, async (req, res) => {
   try {
-    const { messages } = req.body;
-    
-    if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ error: 'Messages array is required' });
+    const settings = await Settings.findOne();
+    if (!settings?.googleAccessToken) {
+      return res.status(400).json({ 
+        error: 'Google OAuth not configured',
+        message: 'Please authenticate with Google first'
+      });
+    }
+
+    // Set credentials from database
+    oauth2Client.setCredentials({
+      access_token: settings.googleAccessToken,
+      refresh_token: settings.googleRefreshToken
+    });
+
+    // Get messages from Gmail API
+    const { data } = await gmail.users.messages.list({
+      userId: 'me',
+      maxResults: 50,
+      q: 'is:unread'
+    });
+
+    if (!data.messages || data.messages.length === 0) {
+      return res.json({ 
+        success: true, 
+        message: 'No new messages found',
+        messages: []
+      });
     }
 
     const savedMessages = [];
-    const skippedMessages = [];
-
-    for (const gmailMessage of messages) {
+    for (const msg of data.messages) {
       try {
-        // Check if message already exists
-        const existingMessage = await Message.findOne({ 
-          messageId: gmailMessage.id 
-        });
-
-        if (existingMessage) {
-          skippedMessages.push(gmailMessage.id);
-          continue;
-        }
-
-        // Fetch full message details
-        const fullMessage = await gapi.client.gmail.users.messages.get({
+        const message = await gmail.users.messages.get({
           userId: 'me',
-          id: gmailMessage.id,
+          id: msg.id,
           format: 'full'
         });
 
-        const messageData = fullMessage.result;
-        const headers = {};
-        messageData.payload.headers.forEach(header => {
-          headers[header.name.toLowerCase()] = header.value;
+        const headers = message.data.payload.headers.reduce((acc, header) => {
+          acc[header.name.toLowerCase()] = header.value;
+          return acc;
+        }, {});
+
+        const existing = await GmailSync.findOne({ messageId: msg.id });
+        if (existing) continue;
+
+        const gmailMessage = new GmailSync({
+          email: headers.from,
+          subject: headers.subject || 'No Subject',
+          snippet: message.data.snippet,
+          from: headers.from,
+          date: new Date(parseInt(message.data.internalDate)),
+          messageId: msg.id,
+          isRead: !message.data.labelIds.includes('UNREAD')
         });
 
-        const newMessage = new Message({
-          userEmail: headers['from'],
-          subject: headers['subject'] || '(No Subject)',
-          message: messageData.snippet,
-          isHtml: false, // You can parse this from the message parts
-          isIncoming: true,
-          from: headers['from'],
-          date: new Date(parseInt(messageData.internalDate)),
-          messageId: gmailMessage.id,
-          gmailData: messageData // Store full message data if needed
-        });
+        await gmailMessage.save();
+        savedMessages.push(gmailMessage);
 
-        await newMessage.save();
-        savedMessages.push(newMessage);
-      } catch (messageError) {
-        console.error(`Error processing message ${gmailMessage.id}:`, messageError);
-        skippedMessages.push(gmailMessage.id);
+        // Mark as read if needed
+        if (!message.data.labelIds.includes('UNREAD')) {
+          await gmail.users.messages.modify({
+            userId: 'me',
+            id: msg.id,
+            requestBody: {
+              removeLabelIds: ['UNREAD']
+            }
+          });
+        }
+      } catch (err) {
+        console.error('Error processing message:', err);
       }
     }
 
-    res.json({
-      success: true,
-      savedCount: savedMessages.length,
-      skippedCount: skippedMessages.length,
-      savedMessages: savedMessages.map(msg => msg._id),
-      skippedMessages
+    res.json({ 
+      success: true, 
+      message: `Synced ${savedMessages.length} new messages`,
+      messages: savedMessages
     });
   } catch (err) {
     console.error('Gmail sync error:', err);
     res.status(500).json({ 
       error: 'Failed to sync Gmail messages',
-      details: err.message 
+      details: err.message
     });
+  }
+});
+
+// ===== BOOKING ROUTES ===== //
+
+// ... (your existing booking routes continue here) ...
+
+// ===== GOOGLE OAUTH ROUTES ===== //
+
+// Initiate Google OAuth flow
+app.get('/api/gmail/auth', authenticateAdmin, (req, res) => {
+  const url = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    scope: [
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/gmail.modify'
+    ],
+    prompt: 'consent'
+  });
+  res.json({ authUrl: url });
+});
+
+// OAuth callback handler
+app.get('/api/gmail/auth/callback', authenticateAdmin, async (req, res) => {
+  try {
+    const { code } = req.query;
+    const { tokens } = await oauth2Client.getToken(code);
+    
+    oauth2Client.setCredentials(tokens);
+    
+    // Save tokens to database or .env
+    process.env.GOOGLE_ACCESS_TOKEN = tokens.access_token;
+    if (tokens.refresh_token) {
+      process.env.GOOGLE_REFRESH_TOKEN = tokens.refresh_token;
+    }
+    
+    // Save tokens to settings in database
+    await Settings.findOneAndUpdate(
+      {},
+      { 
+        googleAccessToken: tokens.access_token,
+        googleRefreshToken: tokens.refresh_token,
+        googleTokenExpiry: tokens.expiry_date
+      },
+      { upsert: true }
+    );
+    
+    res.redirect('/admin?gmail_auth=success');
+  } catch (err) {
+    console.error('Google OAuth callback error:', err);
+    res.redirect('/admin?gmail_auth=error');
+  }
+});
+
+// Check auth status
+app.get('/api/gmail/auth/status', authenticateAdmin, async (req, res) => {
+  try {
+    const settings = await Settings.findOne();
+    const isAuthenticated = !!settings?.googleAccessToken;
+    res.json({ authenticated: isAuthenticated });
+  } catch (err) {
+    console.error('Error checking auth status:', err);
+    res.status(500).json({ error: 'Failed to check auth status' });
   }
 });
 
