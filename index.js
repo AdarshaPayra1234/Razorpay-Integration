@@ -155,9 +155,6 @@ const gmailSyncSchema = new mongoose.Schema({
 
 const GmailSync = mongoose.model('GmailSync', gmailSyncSchema);
 
-const express = require('express');
-const cors = require('cors');
-const app = express();
 
 // 1. First add CORS configuration
 const corsOptions = {
