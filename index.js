@@ -11,6 +11,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const imap = require('imap');
+const router = express.Router();
 const { google } = require('googleapis');
 require('dotenv').config();
 const { Client } = require('@microsoft/microsoft-graph-client');
@@ -97,6 +98,71 @@ const adminSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true }
 });
+
+// IMAP Configuration from .env
+const imapConfig = {
+  user: process.env.OUTLOOK_EMAIL,       // contact@jokercreation.store
+  password: process.env.OUTLOOK_PASSWORD, // Hostinger email password
+  host: process.env.OUTLOOK_IMAP_HOST,   // imap.hostinger.com
+  port: 993,
+  tls: true,
+  authTimeout: 10000
+};
+// Middleware to verify admin token
+const authenticateAdmin = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+  // Verify token logic here (same as your existing admin auth)
+  next();
+};
+
+// Fetch emails from Outlook/Hostinger
+router.get('/sync', authenticateAdmin, (req, res) => {
+  const imap = new Imap(imapConfig);
+  const emails = [];
+
+  imap.once('ready', () => {
+    imap.openBox('INBOX', false, (err, box) => {
+      if (err) throw err;
+
+      const searchCriteria = ['UNSEEN'];
+      const fetchOptions = { bodies: ['HEADER', 'TEXT'], markSeen: false };
+
+      imap.search(searchCriteria, (err, results) => {
+        if (err) throw err;
+
+        const fetch = imap.fetch(results, fetchOptions);
+        fetch.on('message', msg => {
+          let email = {};
+          msg.on('body', stream => {
+            simpleParser(stream, (err, parsed) => {
+              email = {
+                from: parsed.from?.value[0]?.address || parsed.from?.text,
+                subject: parsed.subject,
+                text: parsed.text,
+                date: parsed.date
+              };
+            });
+          });
+          msg.once('end', () => emails.push(email));
+        });
+
+        fetch.once('end', () => {
+          imap.end();
+          res.json({ messages: emails });
+        });
+      });
+    });
+  });
+
+  imap.once('error', err => {
+    res.status(500).json({ error: 'IMAP error: ' + err.message });
+  });
+
+  imap.connect();
+});
+
+module.exports = router;
 
 // Gallery Schema for image management
 const gallerySchema = new mongoose.Schema({
