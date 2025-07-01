@@ -10,7 +10,7 @@ const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const imap = require('imap');
+const imap = require('Imap');
 const router = express.Router();
 const { google } = require('googleapis');
 const { Client } = require('@microsoft/microsoft-graph-client');
@@ -405,9 +405,9 @@ app.get('/api/admin/check-imap-config', authenticateAdmin, async (req, res) => {
     });
     
   } catch (err) {
-    console.error('IMAP config check error:', err);
+    console.error('imap config check error:', err);
     res.status(500).json({ 
-      error: 'Failed to check IMAP configuration',
+      error: 'Failed to check imap configuration',
       details: err.message 
     });
   }
@@ -420,7 +420,7 @@ app.get('/api/outlook/sync', authenticateAdmin, async (req, res) => {
     
     if (!settings?.imapUser || !settings?.imapPass) {
       return res.status(400).json({ 
-        error: 'IMAP not configured',
+        error: 'imap not configured',
         message: 'Please configure email settings first'
       });
     }
@@ -463,7 +463,7 @@ app.get('/api/outlook/sync', authenticateAdmin, async (req, res) => {
                 });
               });
               msg.once('attributes', attrs => {
-                email.headers = Imap.parseHeader(attrs.struct);
+                email.headers = imap.parseHeader(attrs.struct);
                 email.date = attrs.date;
               });
               msg.once('end', () => {
@@ -491,9 +491,9 @@ app.get('/api/outlook/sync', authenticateAdmin, async (req, res) => {
     res.json({ messages: emails });
     
   } catch (err) {
-    console.error('IMAP sync error:', err);
+    console.error('imap sync error:', err);
     res.status(500).json({ 
-      error: 'IMAP synchronization failed',
+      error: 'imap synchronization failed',
       details: err.message,
       stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
@@ -629,7 +629,7 @@ app.get('/api/outlook/sync', authenticateAdmin, async (req, res) => {
   } catch (err) {
     console.error('Sync error:', err);
     res.status(500).json({ 
-      error: 'IMAP sync failed',
+      error: 'imap sync failed',
       details: err.message 
     });
   }
