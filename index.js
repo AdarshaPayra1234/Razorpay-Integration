@@ -254,10 +254,18 @@ async function initializeAdmin() {
         fromEmail: 'contact@jokercreation.store'
       });
       await defaultSettings.save();
-      console.log('Default settings initialized');
+      console.log('Default settings initialized with IMAP configuration');
+    } else if (!existingSettings.imapUser) {
+      // Update existing settings if IMAP isn't configured
+      existingSettings.imapHost = 'imap.hostinger.com';
+      existingSettings.imapPort = 993;
+      existingSettings.imapUser = 'contact@jokercreation.store';
+      existingSettings.imapPass = process.env.EMAIL_PASS;
+      await existingSettings.save();
+      console.log('Updated existing settings with IMAP configuration');
     }
   } catch (err) {
-    console.error('Error initializing admin account:', err);
+    console.error('Error initializing settings:', err);
   }
 }
 
@@ -361,8 +369,8 @@ app.put('/api/admin/settings/imap', authenticateAdmin, async (req, res) => {
     const settings = await Settings.findOneAndUpdate(
       {},
       { 
-        imapHost,
-        imapPort,
+        imapHost: imapHost || 'imap.hostinger.com',
+        imapPort: imapPort || 993,
         imapUser,
         imapPass
       },
