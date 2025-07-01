@@ -1696,17 +1696,42 @@ app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
 
 // ===== SETTINGS ROUTES ===== //
 
+// Add these routes to your backend (index.js)
+
+// Settings Page Route
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public/admin.html'));
+});
+
+// Settings API Endpoint
 app.get('/api/admin/settings', authenticateAdmin, async (req, res) => {
   try {
     const settings = await Settings.findOne();
-    if (!settings) {
-      return res.status(404).json({ error: 'Settings not found' });
-    }
-    
-    res.json({ success: true, settings });
+    res.json(settings || {});
   } catch (err) {
-    console.error('Error fetching settings:', err);
-    res.status(500).json({ error: 'Failed to fetch settings' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update Settings Endpoint
+app.put('/api/admin/settings', authenticateAdmin, async (req, res) => {
+  try {
+    const { imapHost, imapPort, imapUser, imapPass } = req.body;
+    
+    const settings = await Settings.findOneAndUpdate(
+      {},
+      { 
+        imapHost: imapHost || 'imap.hostinger.com',
+        imapPort: imapPort || 993,
+        imapUser,
+        imapPass
+      },
+      { new: true, upsert: true }
+    );
+    
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
