@@ -499,6 +499,17 @@ app.get('/api/outlook/sync', authenticateAdmin, async (req, res) => {
     });
   }
 });
+const contentType = parsed.headers['content-type'] || '';
+const isHtml = contentType.includes('text/html') || !!parsed.html;
+if (!email.message) {
+  emailBodyContainer.innerHTML = '<p style="color: #666">No message content available</p>';
+}
+if (!email.message) {
+  emailBodyContainer.innerHTML = '<p style="color: #666">No message content available</p>';
+}
+if (parsed.attachments && parsed.attachments.length > 0) {
+  console.log('Email has attachments, count:', parsed.attachments.length);
+}
 
 // 3. Admin Settings Page Endpoint
 app.get('/admin', (req, res) => {
