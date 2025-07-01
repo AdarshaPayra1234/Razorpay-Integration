@@ -31,7 +31,6 @@ const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 const { simpleParser } = require('mailparser');
 
 const app = express();
-const PORT = process.env.PORT || 8080;
 
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI, {
@@ -294,20 +293,6 @@ async function initializeAdmin() {
     throw new Error('Failed to initialize admin and settings');
   }
 }
-
-// Usage (during server startup)
-initializeAdmin()
-  .then(() => {
-    console.log('Application ready');
-    app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
-    });
-  })
-  .catch(err => {
-    console.error('Critical initialization error:', err);
-    process.exit(1);
-  });
-
 
 
 // ===== AUTHENTICATION ROUTES ===== //
