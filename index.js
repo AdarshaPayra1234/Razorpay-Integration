@@ -371,104 +371,90 @@ app.get('/api/admin/current-settings', authenticateAdmin, async (req, res) => {
 });
 
 
-app.put('/api/admin/settings/imap', authenticateAdmin, async (req, res) => {
+// Check IMAP configuration
+app.get('/api/admin/check-imap-settings', authenticateAdmin, async (req, res) => {
   try {
-    const { imapHost, imapPort, imapUser, imapPass } = req.body;
-    
-    const settings = await Settings.findOneAndUpdate(
-      {},
-      { 
-        imapHost: imapHost || 'imap.hostinger.com',
-        imapPort: imapPort || 993,
-        imapUser,
-        imapPass
-      },
-      { new: true, upsert: true }
-    );
-    
-    res.json({ success: true, settings });
+    const settings = await Settings.findOne();
+    res.json({
+      imapConfigured: !!(settings?.imapUser && settings?.imapPass),
+      imapHost: settings?.imapHost,
+      imapPort: settings?.imapPort
+    });
   } catch (err) {
-    console.error('Error updating IMAP settings:', err);
-    res.status(500).json({ error: 'Failed to update IMAP settings' });
+    res.status(500).json({ error: err.message });
   }
 });
 
-
-
-// Outlook Sync Route
-// In your backend, modify the outlook sync endpoint:
-// In your outlook sync route (/api/outlook/sync)
+// IMAP Sync Endpoint
 app.get('/api/outlook/sync', authenticateAdmin, async (req, res) => {
   try {
     const settings = await Settings.findOne();
     
-    const imapConfig = {
-      user: settings.imapUser || 'contact@jokercreation.store',
-      password: settings.imapPass || process.env.EMAIL_PASS,
-      host: settings.imapHost || 'imap.hostinger.com',
-      port: settings.imapPort || 993,
+    const imap = new Imap({
+      user: settings.imapUser,
+      password: settings.imapPass,
+      host: settings.imapHost,
+      port: settings.imapPort,
       tls: true,
-      tlsOptions: { 
-        rejectUnauthorized: false // Bypass SSL verification
-      },
-      authTimeout: 30000
-    };
+      tlsOptions: { rejectUnauthorized: false }
+    });
 
-    const imap = new Imap(imapConfig);
-    const emails = [];
+    const messages = await new Promise((resolve, reject) => {
+      const emails = [];
+      
+      imap.once('ready', () => {
+        imap.openBox('INBOX', false, (err, box) => {
+          if (err) return reject(err);
 
-    imap.once('ready', () => {
-      imap.openBox('INBOX', false, (err, box) => {
-        if (err) throw err;
+          imap.search(['UNSEEN'], (err, results) => {
+            if (err) return reject(err);
 
-        imap.search(['UNSEEN'], (err, results) => {
-          if (err) throw err;
-          
-          const fetch = imap.fetch(results, {
-            bodies: ['HEADER', 'TEXT'],
-            markSeen: false
-          });
-
-          fetch.on('message', msg => {
-            let email = {};
-            msg.on('body', stream => {
-              let buffer = '';
-              stream.on('data', chunk => {
-                buffer += chunk.toString('utf8');
-              });
-              stream.on('end', () => {
-                email.text = buffer;
-              });
+            const fetch = imap.fetch(results, { 
+              bodies: ['HEADER', 'TEXT'],
+              markSeen: false 
             });
-            msg.once('attributes', attrs => {
-              email.headers = Imap.parseHeader(attrs.struct);
-              email.date = attrs.date;
-            });
-            msg.once('end', () => {
-              emails.push({
-                from: email.headers.from[0],
-                subject: email.headers.subject[0],
-                text: email.text,
-                date: email.date
+
+            fetch.on('message', msg => {
+              const email = {};
+              msg.on('body', stream => {
+                let buffer = '';
+                stream.on('data', chunk => {
+                  buffer += chunk.toString('utf8');
+                });
+                stream.on('end', () => {
+                  email.text = buffer;
+                });
+              });
+              msg.once('attributes', attrs => {
+                email.headers = Imap.parseHeader(attrs.struct);
+                email.date = attrs.date;
+              });
+              msg.once('end', () => {
+                emails.push({
+                  from: email.headers.from[0],
+                  subject: email.headers.subject[0],
+                  text: email.text,
+                  date: email.date
+                });
               });
             });
-          });
 
-          fetch.once('end', () => {
-            imap.end();
-            res.json({ messages: emails });
+            fetch.once('end', () => {
+              imap.end();
+              resolve(emails);
+            });
           });
         });
       });
+
+      imap.once('error', reject);
+      imap.connect();
     });
 
-    imap.once('error', err => {
-      throw err;
-    });
-
-    imap.connect();
+    res.json({ messages });
+    
   } catch (err) {
-    console.error('Outlook sync error:', err);
+    console.error('Sync error:', err);
     res.status(500).json({ 
       error: 'IMAP sync failed',
       details: err.message 
