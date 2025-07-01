@@ -304,29 +304,38 @@ const authenticateAdmin = async (req, res, next) => {
       return next();
     } catch (tokenError) {
       if (tokenError.name === 'TokenExpiredError') {
-        // Attempt to refresh token
-        const refreshToken = req.cookies.refreshToken;
+        // Check for refresh token in cookies or body
+        const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+        
         if (!refreshToken) {
-          return res.status(401).json({ error: 'Token expired and no refresh token available' });
+          return res.status(401).json({ 
+            error: 'Token expired and no refresh token provided',
+            code: 'TOKEN_EXPIRED' 
+          });
         }
 
-        const refreshDecoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-        const admin = await Admin.findOne({ email: refreshDecoded.email });
-        
-        if (!admin) {
+        try {
+          const refreshDecoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+          const admin = await Admin.findOne({ email: refreshDecoded.email });
+          
+          if (!admin) {
+            return res.status(401).json({ error: 'Invalid refresh token' });
+          }
+
+          const newToken = jwt.sign(
+            { email: admin.email, role: 'admin' },
+            process.env.JWT_SECRET,
+            { expiresIn: '1h' }
+          );
+
+          // Set the new token in the response header
+          res.set('New-Access-Token', newToken);
+          req.admin = refreshDecoded;
+          return next();
+        } catch (refreshError) {
+          console.error('Refresh token error:', refreshError);
           return res.status(401).json({ error: 'Invalid refresh token' });
         }
-
-        const newToken = jwt.sign(
-          { email: admin.email, role: 'admin' },
-          process.env.JWT_SECRET,
-          { expiresIn: '1h' }
-        );
-
-        // Set the new token in the response header
-        res.set('New-Access-Token', newToken);
-        req.admin = refreshDecoded;
-        return next();
       }
       throw tokenError;
     }
