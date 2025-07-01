@@ -224,35 +224,89 @@ const transporter = nodemailer.createTransport({
 // Initialize admin account and default settings
 async function initializeAdmin() {
   try {
-    const adminEmail = 'jokercreationbuisness@gmail.com';
-    const adminPassword = '9002405641';
+    console.log('Starting admin initialization...');
     
-    const existingAdmin = await Admin.findOne({ email: adminEmail });
-    if (!existingAdmin) {
+    // 1. Check for existing admin
+    const adminEmail = 'jokercreationbuisness@gmail.com';
+    let admin = await Admin.findOne({ email: adminEmail });
+    
+    if (!admin) {
+      console.log('Admin account not found, creating new one...');
+      const adminPassword = '9002405641';
       const hashedPassword = await bcrypt.hash(adminPassword, 10);
-      const admin = new Admin({
+      
+      admin = new Admin({
         email: adminEmail,
         password: hashedPassword
       });
+      
       await admin.save();
       console.log('Admin account created successfully');
     }
 
-    // Initialize default settings if they don't exist
-    const existingSettings = await Settings.findOne();
-    if (!existingSettings) {
-      await new Settings({
+    // 2. Initialize default settings
+    let settings = await Settings.findOne();
+    
+    if (!settings) {
+      console.log('No settings found, creating default configuration...');
+      
+      settings = new Settings({
         imapHost: 'imap.hostinger.com',
         imapPort: 993,
         imapUser: 'contact@jokercreation.store',
-        imapPass: process.env.EMAIL_PASS, // Store in .env
-        // ... other settings ...
-      }).save();
+        imapPass: process.env.EMAIL_PASS || '9002405641@Adarsha',
+        smtpHost: 'smtp.hostinger.com',
+        smtpPort: 465,
+        smtpUser: 'contact@jokercreation.store',
+        smtpPass: process.env.EMAIL_PASS || '9002405641@Adarsha',
+        fromEmail: 'contact@jokercreation.store',
+        siteName: 'Joker Creation Studio',
+        contactEmail: 'contact@jokercreation.store',
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+
+      await settings.save();
+      console.log('Default settings initialized successfully');
+    } else if (!settings.imapUser || !settings.imapPass) {
+      console.log('Existing settings found but IMAP not configured, updating...');
+      
+      settings.imapHost = 'imap.hostinger.com';
+      settings.imapPort = 993;
+      settings.imapUser = 'contact@jokercreation.store';
+      settings.imapPass = process.env.EMAIL_PASS || '9002405641@Adarsha';
+      settings.updatedAt = new Date();
+      
+      await settings.save();
+      console.log('IMAP settings updated successfully');
     }
+
+    // 3. Verify critical settings
+    if (!process.env.EMAIL_PASS && !settings.imapPass) {
+      console.warn('WARNING: Email password not set in environment variables or settings');
+    }
+
+    console.log('Admin initialization completed successfully');
+    return { admin, settings };
+    
   } catch (err) {
-    console.error('Error initializing settings:', err);
+    console.error('FATAL ERROR during initialization:', err);
+    throw new Error('Failed to initialize admin and settings');
   }
 }
+
+// Usage (during server startup)
+initializeAdmin()
+  .then(() => {
+    console.log('Application ready');
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  })
+  .catch(err => {
+    console.error('Critical initialization error:', err);
+    process.exit(1);
+  });
 
 
 
@@ -346,27 +400,161 @@ const authenticateAdmin = async (req, res, next) => {
   }
 };
 
-// Add this to your backend routes
-app.get('/api/admin/current-settings', authenticateAdmin, async (req, res) => {
+// 1. IMAP Configuration Check Endpoint
+app.get('/api/admin/check-imap-config', authenticateAdmin, async (req, res) => {
   try {
     const settings = await Settings.findOne();
+    
     if (!settings) {
-      return res.status(404).json({ 
-        error: 'Settings not found',
-        configured: false
+      return res.json({ 
+        configured: false,
+        message: 'No settings found in database'
       });
     }
-    
-    res.json({
-      configured: !!(settings.imapUser && settings.imapPass),
+
+    const configured = !!(settings.imapUser && settings.imapPass);
+    res.json({ 
+      configured,
       imapHost: settings.imapHost,
       imapPort: settings.imapPort
     });
+    
   } catch (err) {
+    console.error('IMAP config check error:', err);
     res.status(500).json({ 
-      error: 'Failed to fetch settings',
+      error: 'Failed to check IMAP configuration',
       details: err.message 
     });
+  }
+});
+
+// 2. Outlook/Hostinger IMAP Sync Endpoint
+app.get('/api/outlook/sync', authenticateAdmin, async (req, res) => {
+  try {
+    const settings = await Settings.findOne();
+    
+    if (!settings?.imapUser || !settings?.imapPass) {
+      return res.status(400).json({ 
+        error: 'IMAP not configured',
+        message: 'Please configure email settings first'
+      });
+    }
+
+    const imapConfig = {
+      user: settings.imapUser,
+      password: settings.imapPass,
+      host: settings.imapHost || 'imap.hostinger.com',
+      port: settings.imapPort || 993,
+      tls: true,
+      tlsOptions: { rejectUnauthorized: false },
+      authTimeout: 30000
+    };
+
+    const emails = await new Promise((resolve, reject) => {
+      const imap = new Imap(imapConfig);
+      const messages = [];
+
+      imap.once('ready', () => {
+        imap.openBox('INBOX', false, (err, box) => {
+          if (err) return reject(err);
+
+          imap.search(['UNSEEN'], (err, results) => {
+            if (err) return reject(err);
+
+            const fetch = imap.fetch(results, {
+              bodies: ['HEADER', 'TEXT'],
+              markSeen: false
+            });
+
+            fetch.on('message', msg => {
+              const email = {};
+              msg.on('body', stream => {
+                let buffer = '';
+                stream.on('data', chunk => {
+                  buffer += chunk.toString('utf8');
+                });
+                stream.on('end', () => {
+                  email.text = buffer;
+                });
+              });
+              msg.once('attributes', attrs => {
+                email.headers = Imap.parseHeader(attrs.struct);
+                email.date = attrs.date;
+              });
+              msg.once('end', () => {
+                messages.push({
+                  from: email.headers.from?.[0] || 'Unknown',
+                  subject: email.headers.subject?.[0] || 'No Subject',
+                  text: email.text || '',
+                  date: email.date || new Date()
+                });
+              });
+            });
+
+            fetch.once('end', () => {
+              imap.end();
+              resolve(messages);
+            });
+          });
+        });
+      });
+
+      imap.once('error', reject);
+      imap.connect();
+    });
+
+    res.json({ messages: emails });
+    
+  } catch (err) {
+    console.error('IMAP sync error:', err);
+    res.status(500).json({ 
+      error: 'IMAP synchronization failed',
+      details: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
+  }
+});
+
+// 3. Admin Settings Page Endpoint
+app.get('/admin', (req, res) => {
+  try {
+    res.sendFile(path.join(__dirname, 'public/admin.html'));
+  } catch (err) {
+    res.status(500).send('Error loading admin page');
+  }
+});
+
+// Add this to your backend routes
+// Current Settings Endpoint
+app.get('/api/admin/current-settings', authenticateAdmin, async (req, res) => {
+  try {
+    const settings = await Settings.findOne();
+    res.json(settings || {});
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update Settings Endpoint
+app.put('/api/admin/settings', authenticateAdmin, async (req, res) => {
+  try {
+    const { imapHost, imapPort, imapUser, imapPass } = req.body;
+    
+    const settings = await Settings.findOneAndUpdate(
+      {},
+      { 
+        imapHost: imapHost || 'imap.hostinger.com',
+        imapPort: imapPort || 993,
+        imapUser,
+        imapPass,
+        updatedAt: new Date()
+      },
+      { new: true, upsert: true }
+    );
+    
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
