@@ -1405,7 +1405,12 @@ async function fetchEmailsFromIMAP() {
             let emailBuffer = '';
 
             fetch.on('message', (msg) => {
-              const email = { attachments: [] };
+    const email = { 
+      headers: {},
+      text: '',
+      html: '',
+      attachments: [] 
+    };
 
               msg.on('body', (stream, info) => {
                 stream.on('data', (chunk) => {
@@ -1528,15 +1533,16 @@ app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
         const subject = parsed.subject || 'No Subject';
         
         const newMessage = new Message({
-          userEmail: fromAddress,
-          subject: subject,
-          message: parsed.text || parsed.html || '',
-          isHtml: !!parsed.html,
-          isIncoming: true,
-          from: parsed.from?.text || 'Unknown Sender',
-          date: parsed.date || new Date(),
-          messageId: email.messageId
-        });
+  userEmail: fromAddress,
+  subject: subject,
+  message: parsed.html || parsed.text || '', // Prefer HTML if available
+  isHtml: !!parsed.html, // Mark if content is HTML
+  isIncoming: true,
+  from: parsed.from?.text || 'Unknown Sender',
+  date: parsed.date || new Date(),
+  messageId: email.messageId,
+  raw: email.text // Store raw email for debugging
+});
 
         // Handle attachments if present
         if (parsed.attachments && parsed.attachments.length > 0) {
@@ -1617,6 +1623,11 @@ app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
       stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
   }
+});
+console.log('Raw email structure:', {
+  headers: email.headers,
+  text: email.text.substring(0, 500) + '...', // First 500 chars
+  hasHtml: !!email.html
 });
 
 // Enhanced Inbox Fetching
