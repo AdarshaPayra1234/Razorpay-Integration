@@ -242,11 +242,16 @@ async function initializeAdmin() {
     const existingSettings = await Settings.findOne();
     if (!existingSettings) {
       const defaultSettings = new Settings({
-        cancellationPolicy: 'Cancellations must be made at least 24 hours in advance for a full refund.',
+        // ... other settings ...
         imapHost: 'imap.hostinger.com',
         imapPort: 993,
-        imapUser: process.env.EMAIL_USER,
-        imapPass: process.env.EMAIL_PASS
+        imapUser: 'contact@jokercreation.store', // Your email
+        imapPass: process.env.EMAIL_PASS, // Make sure this is in your .env
+        smtpHost: 'smtp.hostinger.com',
+        smtpPort: 465,
+        smtpUser: 'contact@jokercreation.store',
+        smtpPass: process.env.EMAIL_PASS,
+        fromEmail: 'contact@jokercreation.store'
       });
       await defaultSettings.save();
       console.log('Default settings initialized');
@@ -256,7 +261,7 @@ async function initializeAdmin() {
   }
 }
 
-initializeAdmin();
+
 
 // ===== AUTHENTICATION ROUTES ===== //
 
@@ -347,6 +352,29 @@ const authenticateAdmin = async (req, res, next) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 };
+
+
+app.put('/api/admin/settings/imap', authenticateAdmin, async (req, res) => {
+  try {
+    const { imapHost, imapPort, imapUser, imapPass } = req.body;
+    
+    const settings = await Settings.findOneAndUpdate(
+      {},
+      { 
+        imapHost,
+        imapPort,
+        imapUser,
+        imapPass
+      },
+      { new: true, upsert: true }
+    );
+    
+    res.json({ success: true, settings });
+  } catch (err) {
+    console.error('Error updating IMAP settings:', err);
+    res.status(500).json({ error: 'Failed to update IMAP settings' });
+  }
+});
 
 
 
