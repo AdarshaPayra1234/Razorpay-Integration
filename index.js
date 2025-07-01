@@ -13,7 +13,6 @@ const fs = require('fs');
 const imap = require('imap');
 const router = express.Router();
 const { google } = require('googleapis');
-require('dotenv').config();
 const { Client } = require('@microsoft/microsoft-graph-client');
 const { ClientSecretCredential } = require('@azure/identity');
 // Use your existing registration details
@@ -31,6 +30,7 @@ const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 const { simpleParser } = require('mailparser');
 
 const app = express();
+const PORT = process.env.PORT || 8080; // Add this line
 
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI, {
