@@ -241,28 +241,13 @@ async function initializeAdmin() {
     // Initialize default settings if they don't exist
     const existingSettings = await Settings.findOne();
     if (!existingSettings) {
-      const defaultSettings = new Settings({
-        // ... other settings ...
+      await new Settings({
         imapHost: 'imap.hostinger.com',
         imapPort: 993,
-        imapUser: 'contact@jokercreation.store', // Your email
-        imapPass: process.env.EMAIL_PASS, // Make sure this is in your .env
-        smtpHost: 'smtp.hostinger.com',
-        smtpPort: 465,
-        smtpUser: 'contact@jokercreation.store',
-        smtpPass: process.env.EMAIL_PASS,
-        fromEmail: 'contact@jokercreation.store'
-      });
-      await defaultSettings.save();
-      console.log('Default settings initialized with IMAP configuration');
-    } else if (!existingSettings.imapUser) {
-      // Update existing settings if IMAP isn't configured
-      existingSettings.imapHost = 'imap.hostinger.com';
-      existingSettings.imapPort = 993;
-      existingSettings.imapUser = 'contact@jokercreation.store';
-      existingSettings.imapPass = process.env.EMAIL_PASS;
-      await existingSettings.save();
-      console.log('Updated existing settings with IMAP configuration');
+        imapUser: 'contact@jokercreation.store',
+        imapPass: process.env.EMAIL_PASS, // Store in .env
+        // ... other settings ...
+      }).save();
     }
   } catch (err) {
     console.error('Error initializing settings:', err);
