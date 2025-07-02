@@ -25,17 +25,6 @@ mongoose.connect(process.env.MONGODB_URI, {
 .then(() => console.log('Connected to MongoDB Atlas (booking_db)'))
 .catch((err) => console.error('MongoDB connection error:', err));
 
-const client = Client.initWithMiddleware({
-  authProvider: {
-    getAccessToken: async () => {
-      const token = await credential.getToken([
-        'https://graph.microsoft.com/.default'
-      ]);
-      return token.token;
-    }
-  }
-});
-
 // Enhanced Booking Schema
 const bookingSchema = new mongoose.Schema({
   customerName: String,
