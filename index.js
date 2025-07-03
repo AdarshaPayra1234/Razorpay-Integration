@@ -130,9 +130,10 @@ const GmailSync = mongoose.model('GmailSync', gmailSyncSchema);
 
 
 // 1. First add CORS configuration
+// 1. First add CORS configuration
 const corsOptions = {
   origin: ['https://jokercreation.store', 'http://localhost:3000'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'], // Added PATCH here
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
   optionsSuccessStatus: 200
@@ -738,20 +739,17 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
       size: file.size
     }));
 
-    const savedMessages = [];
-    for (const email of emails) {
-      const newMessage = new Message({
-        userEmail: email,
-        subject,
-        message,
-        isHtml: isHtml === 'true',
-        attachments
-      });
-      
-      await newMessage.save();
-      savedMessages.push(newMessage);
-    }
+    // Create a single message document instead of multiple
+    const newMessage = new Message({
+      userEmail: emails.join(','), // Store all emails as comma-separated string
+      subject,
+      message,
+      isHtml: isHtml === 'true',
+      attachments
+    });
     
+    await newMessage.save();
+
     const mailOptions = {
       from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
       to: emails.join(','),
@@ -770,14 +768,15 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
     
     res.json({ 
       success: true, 
-      messages: savedMessages.map(msg => ({
-        ...msg.toObject(),
-        attachments: msg.attachments.map(att => ({
+      message: {
+        ...newMessage.toObject(),
+        _id: newMessage._id, // Ensure _id is included
+        attachments: newMessage.attachments.map(att => ({
           filename: att.filename,
           contentType: att.contentType,
           size: att.size
         }))
-      }))
+      }
     });
   } catch (err) {
     console.error('Error sending message:', err);
@@ -787,6 +786,50 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
     }
     
     res.status(500).json({ error: 'Failed to send message' });
+  }
+});
+
+// Add to your backend (index.js)
+
+// Email Template Schema
+const emailTemplateSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  subject: { type: String, required: true },
+  html: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
+const EmailTemplate = mongoose.model('EmailTemplate', emailTemplateSchema);
+
+// Routes for template management
+app.get('/api/admin/email-templates', authenticateAdmin, async (req, res) => {
+  try {
+    const templates = await EmailTemplate.find().sort({ name: 1 });
+    res.json({ success: true, templates });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch templates' });
+  }
+});
+
+app.post('/api/admin/email-templates', authenticateAdmin, async (req, res) => {
+  try {
+    const { name, subject, html } = req.body;
+    const template = new EmailTemplate({ name, subject, html });
+    await template.save();
+    res.json({ success: true, template });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to create template' });
+  }
+});
+
+app.get('/api/admin/email-templates/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const template = await EmailTemplate.findById(req.params.id);
+    if (!template) return res.status(404).json({ error: 'Template not found' });
+    res.json({ success: true, template });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch template' });
   }
 });
 
