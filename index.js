@@ -31,10 +31,7 @@ const bookingSchema = new mongoose.Schema({
   customerEmail: { type: String, required: true },
   customerPhone: String,
   package: String,
-  packageAmount: Number,  // Stores numeric value only
   bookingDates: String,
-  eventStartDate: String, // Raw start date
-  eventEndDate: String,   // Raw end date
   preWeddingDate: String,
   address: String,
   transactionId: String,
@@ -1738,36 +1735,33 @@ app.patch('/api/bookings/:id/status', async (req, res) => {
 });
 
 app.post('/save-booking', async (req, res) => {
+  console.log('Booking data received:', req.body);
+
   try {
     const {
       customerName,
       customerEmail,
-      // ... other fields
-      eventStartDate,
-      eventEndDate,  // These come from frontend
+      customerPhone,
       package,
+      bookingDates,
+      preWeddingDate,
       address,
-      transactionId
+      transactionId,
+      userId
     } = req.body;
-
-    // Combine dates for storage
-    const bookingDates = `${eventStartDate} to ${eventEndDate}`;
-    
-    // Extract just the numeric amount from package string
-    const packageAmount = parseInt(req.body.package.replace(/[^0-9]/g, ''));
-    const packageName = package.split('-')[1]?.trim() || '';
 
     const newBooking = new Booking({
       customerName,
       customerEmail,
-      bookingDates,  // Now properly formatted
-      package: `₹${packageAmount} - ${packageName}`,  // Standardized format
-      packageAmount: packageAmount,
-  eventStartDate: req.body.eventStartDate,
-  eventEndDate: req.body.eventEndDate
+      customerPhone,
+      package,
+      bookingDates,
+      preWeddingDate,
       address,
       transactionId,
-      // ... other fields
+      paymentStatus: 'Paid',
+      status: 'pending',
+      userId: userId || null
     });
 
     await newBooking.save();
