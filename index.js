@@ -31,10 +31,10 @@ const bookingSchema = new mongoose.Schema({
   customerEmail: { type: String, required: true },
   customerPhone: String,
   package: String,
-  packageAmount: Number,  // New field - stores numeric value only
+  packageAmount: Number,  // Stores numeric value only
   bookingDates: String,
-  eventStartDate: String, // New field - raw start date
-  eventEndDate: String,   // New field - raw end date
+  eventStartDate: String, // Raw start date
+  eventEndDate: String,   // Raw end date
   preWeddingDate: String,
   address: String,
   transactionId: String,
