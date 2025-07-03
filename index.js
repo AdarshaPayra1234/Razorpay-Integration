@@ -533,7 +533,16 @@ app.get('/api/admin/bookings/:id', authenticateAdmin, async (req, res) => {
       return res.status(404).json({ error: 'Booking not found' });
     }
     
-    res.json({ success: true, booking });
+    // Ensure all required fields are included in the response
+    const responseData = {
+      ...booking.toObject(),
+      // Add any missing fields or format existing ones
+      amount: booking.package ? booking.package.replace(/[^0-9]/g, '') : '0',
+      bookingDates: booking.bookingDates || 'Not specified',
+      createdAt: booking.createdAt.toLocaleString()
+    };
+    
+    res.json({ success: true, booking: responseData });
   } catch (err) {
     console.error('Error fetching booking:', err);
     res.status(500).json({ error: 'Failed to fetch booking' });
