@@ -549,14 +549,12 @@ app.post('/api/admin/coupon-banners', authenticateAdmin, upload.single('bannerIm
 // On your backend server (Node.js/Express)
 app.post('/api/coupons/validate', async (req, res) => {
   try {
-    const { code } = req.body; // Removed email from destructuring
-    
+    const { code } = req.body;
     const coupon = await Coupon.findOne({
       code,
       isActive: true,
       validFrom: { $lte: new Date() },
       validUntil: { $gte: new Date() }
-      // Removed targetUsers check completely
     });
 
     if (!coupon) {
@@ -571,16 +569,12 @@ app.post('/api/coupons/validate', async (req, res) => {
       coupon: {
         code: coupon.code,
         discountType: coupon.discountType,
-        discountValue: coupon.discountValue
-        // Removed minOrderAmount if not needed
+        discountValue: coupon.discountValue,
+        minOrderAmount: coupon.minOrderAmount || 0
       }
     });
-
   } catch (error) {
-    res.status(500).json({ 
-      valid: false, 
-      error: 'Server error during validation' 
-    });
+    res.status(500).json({ error: 'Server error' });
   }
 });
 // Add to your server routes
@@ -1931,9 +1925,9 @@ app.post('/save-booking', async (req, res) => {
       transactionId,
       userId,
       couponCode,
-      discountAmount,
-      finalAmount
-    } = req.body;
+  discountAmount = 0,
+  finalAmount
+} = req.body;
 
     const newBooking = new Booking({
       customerName,
@@ -1947,10 +1941,10 @@ app.post('/save-booking', async (req, res) => {
       paymentStatus: 'Paid',
       status: 'pending',
       userId: userId || null,
-      couponCode: couponCode || null,
-      discountAmount: discountAmount || 0,
-      finalAmount: finalAmount || parseInt(package.replace(/[^0-9]/g, '')) || 0
-    });
+      couponCode,
+  discountAmount,
+  finalAmount: finalAmount || packagePrice // fallback to package price if no discount
+});
 
     await newBooking.save();
 
