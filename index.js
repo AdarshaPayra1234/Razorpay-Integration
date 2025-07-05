@@ -559,13 +559,26 @@ router.get('/api/coupons/validate/:code', async (req, res) => {
 });
 
 // Apply coupon to booking
+// Updated /api/bookings/:id/apply-coupon route
 router.post('/api/bookings/:id/apply-coupon', async (req, res) => {
   try {
     const { couponCode } = req.body;
-    const booking = await Booking.findById(req.params.id);
+    const { id } = req.params;
+
+    // Validate booking ID
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: 'Invalid booking ID' });
+    }
+
+    const booking = await Booking.findById(id);
     
     if (!booking) {
       return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    // Validate coupon code exists
+    if (!couponCode) {
+      return res.status(400).json({ error: 'Coupon code is required' });
     }
 
     const coupon = await Coupon.findOne({ 
@@ -600,22 +613,32 @@ router.post('/api/bookings/:id/apply-coupon', async (req, res) => {
       discountAmount = coupon.discountValue;
     }
 
+    // Ensure discount doesn't exceed package price
+    discountAmount = Math.min(discountAmount, packagePrice);
+
     // Update booking with coupon details
-    booking.couponCode = coupon.code;
-    booking.discountAmount = discountAmount;
-    booking.finalAmount = packagePrice - discountAmount;
-    await booking.save();
+    const updatedBooking = await Booking.findByIdAndUpdate(
+      id,
+      { 
+        couponCode: coupon.code,
+        discountAmount,
+        finalAmount: packagePrice - discountAmount
+      },
+      { new: true }
+    );
 
     // Increment coupon uses
     await Coupon.findByIdAndUpdate(coupon._id, { $inc: { currentUses: 1 } });
 
     res.json({ 
       success: true,
+      booking: updatedBooking,
       discountAmount,
-      finalAmount: booking.finalAmount
+      finalAmount: updatedBooking.finalAmount
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error applying coupon:', err);
+    res.status(500).json({ error: 'Failed to apply coupon' });
   }
 });
 
