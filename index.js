@@ -24,72 +24,37 @@ mongoose.connect(process.env.MONGODB_URI, {
 .then(() => console.log('Connected to MongoDB Atlas (booking_db)'))
 .catch((err) => console.error('MongoDB connection error:', err));
 
-// At the top of your backend file (right after your require statements)
-const allowedOrigins = [
-  'https://jokercreation.store',
-  'http://localhost:3000',
-  'https://jokercreation.store/payment.html',
-  'https://jokercreation.store/admin.html'
-];
-
+// CORS Configuration - Modified for payment page compatibility
 const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: ['https://jokercreation.store', 'http://localhost:3000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: [
-    'Content-Type',
+    'Content-Type', 
     'Authorization',
-    'X-Requested-With',
-    'Accept',
-    'Origin',
-    'Access-Control-Request-Method',
-    'Access-Control-Request-Headers'
-  ],
-  exposedHeaders: [
-    'Content-Length',
-    'Date',
-    'X-Request-Id',
-    'Authorization',
-    'Access-Control-Allow-Origin'
+    'X-Requested-With', // Added for payment page
+    'Accept' // Added for payment page
   ],
   credentials: true,
-  maxAge: 86400, // 24 hours
-  preflightContinue: false,
-  optionsSuccessStatus: 204
+  optionsSuccessStatus: 204, // Changed to 204 for preflight
+  preflightContinue: false // Explicitly set
 };
 
-// Apply CORS middleware
+// Middleware - Keep your existing setup but add a specific payment route handler
 app.use(cors(corsOptions));
-
-// Handle preflight requests
 app.options('*', cors(corsOptions));
 
-// Add this middleware to set headers for all responses
-app.use((req, res, next) => {
-  // Set CORS headers
-  const origin = req.headers.origin;
-  if (allowedOrigins.includes(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+// Add this specific preflight handler for the payment endpoint
+app.options('/api/coupons/validate', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', 'https://jokercreation.store');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
-  
-  // For preflight requests
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
-  
-  next();
+  res.status(204).end();
 });
+
+// Keep your existing body parser middleware
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
 
 // Razorpay Setup
 const razorpayInstance = new Razorpay({
