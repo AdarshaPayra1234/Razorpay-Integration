@@ -24,39 +24,43 @@ mongoose.connect(process.env.MONGODB_URI, {
 .then(() => console.log('Connected to MongoDB Atlas (booking_db)'))
 .catch((err) => console.error('MongoDB connection error:', err));
 
-// Add this middleware BEFORE your CORS setup
+// 3. Define CORS options (must come before use)
+const corsOptions = {
+  origin: (origin, callback) => {
+    const allowedOrigins = [
+      'https://jokercreation.store',
+      'http://localhost:3000'
+    ];
+    
+    // Allow requests with no origin (like mobile apps or Postman)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+
+// 4. Apply CORS middleware
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // Enable preflight for all routes
+
+// 5. Then add other middleware
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// 6. Add debug middleware (optional)
 app.use((req, res, next) => {
   console.log('Incoming Request:', {
     method: req.method,
     url: req.originalUrl,
-    headers: req.headers,
-    ip: req.ip
-  });
-  next();
-});
-
-// Then add your existing CORS middleware
-app.use(cors(corsOptions));
-
-// CORS Configuration
-// Temporary debug CORS config (replace your current one)
-const corsOptions = {
-  origin: '*', // Allow all origins for now
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  credentials: true,
-  optionsSuccessStatus: 200,
-  preflightContinue: true
-};
-
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // Enable preflight for all routes
-// Add this middleware to log CORS-related headers
-app.use((req, res, next) => {
-  console.log('CORS Headers:', {
-    origin: req.headers.origin,
-    'access-control-request-method': req.headers['access-control-request-method'],
-    'access-control-request-headers': req.headers['access-control-request-headers']
+    origin: req.headers.origin
   });
   next();
 });
