@@ -129,6 +129,9 @@ const gmailSyncSchema = new mongoose.Schema({
 const GmailSync = mongoose.model('GmailSync', gmailSyncSchema);
 
 // Add to your backend models
+// ===== COUPON ROUTES ===== //
+
+// Coupon Model (add with your other models)
 const couponSchema = new mongoose.Schema({
   code: { type: String, required: true, unique: true },
   discountType: { type: String, enum: ['percentage', 'fixed'], required: true },
@@ -143,18 +146,83 @@ const couponSchema = new mongoose.Schema({
   createdBy: { type: String, required: true }
 });
 
+const Coupon = mongoose.model('Coupon', couponSchema);
+
+// Coupon Banner Model
 const couponBannerSchema = new mongoose.Schema({
   imageUrl: { type: String, required: true },
   title: { type: String, required: true },
   subtitle: { type: String },
   couponCode: { type: String },
   isActive: { type: Boolean, default: true },
-  targetUsers: { type: [String], default: [] }, // Empty array means all users
+  targetUsers: { type: [String], default: [] },
   createdAt: { type: Date, default: Date.now }
 });
 
-const Coupon = mongoose.model('Coupon', couponSchema);
 const CouponBanner = mongoose.model('CouponBanner', couponBannerSchema);
+
+// Coupon Routes
+app.post('/api/admin/coupons', authenticateAdmin, async (req, res) => {
+  try {
+    const coupon = new Coupon(req.body);
+    await coupon.save();
+    res.json({ success: true, coupon });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/coupons', authenticateAdmin, async (req, res) => {
+  try {
+    const coupons = await Coupon.find().sort({ createdAt: -1 });
+    res.json({ success: true, coupons });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/coupons/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const coupon = await Coupon.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    res.json({ success: true, coupon });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/admin/coupons/:id', authenticateAdmin, async (req, res) => {
+  try {
+    await Coupon.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: 'Coupon deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Coupon Banner Routes
+app.post('/api/admin/coupon-banners', authenticateAdmin, upload.single('bannerImage'), async (req, res) => {
+  try {
+    const bannerData = {
+      ...req.body,
+      imageUrl: `/uploads/${req.file.filename}`,
+      targetUsers: req.body.targetUsers ? JSON.parse(req.body.targetUsers) : []
+    };
+    const banner = new CouponBanner(bannerData);
+    await banner.save();
+    res.json({ success: true, banner });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/coupon-banners', authenticateAdmin, async (req, res) => {
+  try {
+    const banners = await CouponBanner.find().sort({ createdAt: -1 });
+    res.json({ success: true, banners });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 
 // 1. First add CORS configuration
