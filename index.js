@@ -111,17 +111,55 @@ const bookingSchema = new mongoose.Schema({
   preWeddingDate: String,
   address: String,
   transactionId: String,
-  paymentStatus: { type: String, default: 'pending' },
+  paymentStatus: { 
+    type: String, 
+    enum: ['pending', 'partially_paid', 'completed', 'refunded', 'failed'],
+    default: 'pending' 
+  },
   status: { 
     type: String, 
-    enum: ['pending', 'confirmed', 'cancelled', 'completed'],
+    enum: ['pending', 'confirmed', 'cancelled', 'completed', 'rescheduled'],
     default: 'pending' 
   },
   userId: String,
   createdAt: { type: Date, default: Date.now },
+  
+  // Discount-related fields
   couponCode: String,
-  discountAmount: Number,
-  finalAmount: Number
+  discountType: {
+    type: String,
+    enum: ['percentage', 'fixed', 'special', null],
+    default: null
+  },
+  discountValue: Number, // 10 for 10%, 2000 for ₹2000 off
+  originalAmount: Number, // Amount before any discounts
+  discountAmount: Number, // Calculated discount amount (₹)
+  finalAmount: Number, // originalAmount - discountAmount
+  
+  // Detailed discount information
+  discountDetails: {
+    description: String, // "Summer Special 10% Off"
+    terms: String, // "Valid until Dec 31, 2023"
+    appliedAt: { type: Date, default: Date.now },
+    validUntil: Date,
+    minOrderAmount: Number, // Minimum order required for this discount
+    maxDiscount: Number // Maximum discount amount if applicable
+  },
+  
+  // Payment breakdown
+  paymentBreakdown: {
+    advancePaid: Number,
+    remainingBalance: Number,
+    dueDate: Date,
+    paymentMethod: String
+  },
+  
+  // Audit fields
+  updatedAt: { type: Date, default: Date.now },
+  updatedBy: String, // "system" or admin ID
+  notes: String // Any special notes about this booking
+}, {
+  timestamps: true // Automatically adds createdAt and updatedAt
 });
 
 // Message Schema
