@@ -571,6 +571,24 @@ async function sendCouponBannerEmails(banner) {
   }
 }
 
+// Add to your server routes
+app.get('/api/coupons/debug/:code', async (req, res) => {
+  const coupon = await Coupon.findOne({ code: req.params.code });
+  res.json({
+    exists: !!coupon,
+    currentTime: new Date(),
+    coupon,
+    validityCheck: {
+      isActive: coupon?.isActive,
+      validFrom: coupon?.validFrom,
+      validUntil: coupon?.validUntil,
+      isCurrentlyValid: coupon ? 
+        (new Date() >= new Date(coupon.validFrom) && 
+         new Date() <= new Date(coupon.validUntil)) : null
+    }
+  });
+});
+
 // Public API for coupon validation
 app.get('/api/coupons/validate/:code', async (req, res) => {
   try {
