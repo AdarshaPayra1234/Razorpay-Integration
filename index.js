@@ -208,6 +208,18 @@ const bannerSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 const Banner = mongoose.model('Banner', bannerSchema);
+// Add this with your other schema definitions
+const couponBannerSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  subtitle: { type: String },
+  imageUrl: { type: String, required: true },
+  couponCode: { type: String },
+  targetUsers: { type: [String], default: [] }, // Empty array means all users
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const CouponBanner = mongoose.model('CouponBanner', couponBannerSchema);
 
 // Email Template Schema
 const emailTemplateSchema = new mongoose.Schema({
