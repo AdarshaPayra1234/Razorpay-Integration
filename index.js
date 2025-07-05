@@ -490,10 +490,12 @@ app.post('/api/admin/coupon-banners', authenticateAdmin, upload.single('bannerIm
     res.status(400).json({ error: err.message });
   }
 });
+// Coupon Validation Endpoint
 app.post('/api/coupons/validate', async (req, res) => {
   try {
     const { code, email } = req.body;
     
+    // Find active coupon
     const coupon = await Coupon.findOne({ 
       code,
       isActive: true,
@@ -512,12 +514,27 @@ app.post('/api/coupons/validate', async (req, res) => {
     });
 
     if (!coupon) {
-      return res.status(404).json({ error: 'Invalid or expired coupon' });
+      return res.status(404).json({ 
+        valid: false,
+        error: 'Invalid or expired coupon code' 
+      });
     }
 
-    res.json({ valid: true, coupon });
+    res.json({ 
+      valid: true,
+      coupon: {
+        code: coupon.code,
+        discountType: coupon.discountType,
+        discountValue: coupon.discountValue,
+        minOrderAmount: coupon.minOrderAmount || 0
+      }
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Coupon validation error:', err);
+    res.status(500).json({ 
+      valid: false,
+      error: 'Failed to validate coupon' 
+    });
   }
 });
 
