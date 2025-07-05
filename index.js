@@ -25,19 +25,27 @@ mongoose.connect(process.env.MONGODB_URI, {
 .catch((err) => console.error('MongoDB connection error:', err));
 
 // CORS Configuration
+// Temporary debug CORS config (replace your current one)
 const corsOptions = {
-  origin: ['https://jokercreation.store', 'http://localhost:3000'],
+  origin: '*', // Allow all origins for now
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   credentials: true,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
+  preflightContinue: true
 };
 
-// Middleware
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
-app.use(bodyParser.json({ limit: '50mb' }));
-app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
+app.options('*', cors(corsOptions)); // Enable preflight for all routes
+// Add this middleware to log CORS-related headers
+app.use((req, res, next) => {
+  console.log('CORS Headers:', {
+    origin: req.headers.origin,
+    'access-control-request-method': req.headers['access-control-request-method'],
+    'access-control-request-headers': req.headers['access-control-request-headers']
+  });
+  next();
+});
 
 // Razorpay Setup
 const razorpayInstance = new Razorpay({
