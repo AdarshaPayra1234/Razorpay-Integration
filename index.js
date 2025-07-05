@@ -494,17 +494,14 @@ app.post('/api/admin/coupon-banners', authenticateAdmin, upload.single('bannerIm
 // On your backend server (Node.js/Express)
 app.post('/api/coupons/validate', async (req, res) => {
   try {
-    const { code, email } = req.body;
+    const { code } = req.body; // Removed email from destructuring
     
     const coupon = await Coupon.findOne({
       code,
       isActive: true,
       validFrom: { $lte: new Date() },
-      validUntil: { $gte: new Date() },
-      $or: [
-        { targetUsers: [] },
-        { targetUsers: email }
-      ]
+      validUntil: { $gte: new Date() }
+      // Removed targetUsers check completely
     });
 
     if (!coupon) {
@@ -519,8 +516,8 @@ app.post('/api/coupons/validate', async (req, res) => {
       coupon: {
         code: coupon.code,
         discountType: coupon.discountType,
-        discountValue: coupon.discountValue,
-        minOrderAmount: coupon.minOrderAmount
+        discountValue: coupon.discountValue
+        // Removed minOrderAmount if not needed
       }
     });
 
