@@ -128,6 +128,34 @@ const gmailSyncSchema = new mongoose.Schema({
 
 const GmailSync = mongoose.model('GmailSync', gmailSyncSchema);
 
+// Add to your backend models
+const couponSchema = new mongoose.Schema({
+  code: { type: String, required: true, unique: true },
+  discountType: { type: String, enum: ['percentage', 'fixed'], required: true },
+  discountValue: { type: Number, required: true },
+  minOrderAmount: { type: Number, default: 0 },
+  validFrom: { type: Date, required: true },
+  validUntil: { type: Date, required: true },
+  maxUses: { type: Number, default: null },
+  currentUses: { type: Number, default: 0 },
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now },
+  createdBy: { type: String, required: true }
+});
+
+const couponBannerSchema = new mongoose.Schema({
+  imageUrl: { type: String, required: true },
+  title: { type: String, required: true },
+  subtitle: { type: String },
+  couponCode: { type: String },
+  isActive: { type: Boolean, default: true },
+  targetUsers: { type: [String], default: [] }, // Empty array means all users
+  createdAt: { type: Date, default: Date.now }
+});
+
+const Coupon = mongoose.model('Coupon', couponSchema);
+const CouponBanner = mongoose.model('CouponBanner', couponBannerSchema);
+
 
 // 1. First add CORS configuration
 // 1. First add CORS configuration
@@ -414,6 +442,182 @@ app.get('/api/admin/current-settings', authenticateAdmin, async (req, res) => {
 // ===== BOOKING ROUTES ===== //
 
 // ... (your existing booking routes continue here) ...
+// Coupon Routes
+router.post('/api/admin/coupons', authenticateAdmin, async (req, res) => {
+  try {
+    const coupon = new Coupon(req.body);
+    await coupon.save();
+    res.json({ success: true, coupon });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.get('/api/admin/coupons', authenticateAdmin, async (req, res) => {
+  try {
+    const coupons = await Coupon.find().sort({ createdAt: -1 });
+    res.json({ success: true, coupons });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/api/admin/coupons/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const coupon = await Coupon.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    res.json({ success: true, coupon });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.delete('/api/admin/coupons/:id', authenticateAdmin, async (req, res) => {
+  try {
+    await Coupon.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: 'Coupon deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Coupon Banner Routes
+router.post('/api/admin/coupon-banners', authenticateAdmin, upload.single('bannerImage'), async (req, res) => {
+  try {
+    const bannerData = {
+      ...req.body,
+      imageUrl: `/uploads/${req.file.filename}`,
+      targetUsers: req.body.targetUsers ? JSON.parse(req.body.targetUsers) : []
+    };
+    const banner = new CouponBanner(bannerData);
+    await banner.save();
+    
+    // Send emails to targeted users
+    await sendCouponBannerEmails(banner);
+    
+    res.json({ success: true, banner });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+async function sendCouponBannerEmails(banner) {
+  let users;
+  if (banner.targetUsers.length > 0) {
+    users = await Booking.distinct('customerEmail', { customerEmail: { $in: banner.targetUsers } });
+  } else {
+    users = await Booking.distinct('customerEmail');
+  }
+
+  for (const email of users) {
+    const mailOptions = {
+      from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: banner.title || 'Special Offer for You!',
+      html: `
+        <div style="max-width: 600px; margin: 0 auto; font-family: Arial, sans-serif;">
+          <h2 style="color: #00acc1;">${banner.title}</h2>
+          ${banner.subtitle ? `<p>${banner.subtitle}</p>` : ''}
+          <img src="${process.env.BASE_URL}${banner.imageUrl}" alt="Special Offer" style="max-width: 100%;">
+          ${banner.couponCode ? `<p style="margin-top: 20px;">Use coupon code: <strong>${banner.couponCode}</strong></p>` : ''}
+        </div>
+      `
+    };
+    await transporter.sendMail(mailOptions);
+  }
+}
+
+// Public API for coupon validation
+router.get('/api/coupons/validate/:code', async (req, res) => {
+  try {
+    const coupon = await Coupon.findOne({ 
+      code: req.params.code,
+      isActive: true,
+      validFrom: { $lte: new Date() },
+      validUntil: { $gte: new Date() },
+      $or: [
+        { maxUses: null },
+        { maxUses: { $gt: { $ifNull: ["$currentUses", 0] } } }
+      ]
+    });
+
+    if (!coupon) {
+      return res.status(404).json({ error: 'Invalid or expired coupon code' });
+    }
+
+    res.json({ 
+      success: true, 
+      coupon: {
+        code: coupon.code,
+        discountType: coupon.discountType,
+        discountValue: coupon.discountValue,
+        minOrderAmount: coupon.minOrderAmount
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Apply coupon to booking
+router.post('/api/bookings/:id/apply-coupon', async (req, res) => {
+  try {
+    const { couponCode } = req.body;
+    const booking = await Booking.findById(req.params.id);
+    
+    if (!booking) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    const coupon = await Coupon.findOne({ 
+      code: couponCode,
+      isActive: true,
+      validFrom: { $lte: new Date() },
+      validUntil: { $gte: new Date() },
+      $or: [
+        { maxUses: null },
+        { maxUses: { $gt: { $ifNull: ["$currentUses", 0] } } }
+      ]
+    });
+
+    if (!coupon) {
+      return res.status(400).json({ error: 'Invalid or expired coupon code' });
+    }
+
+    // Calculate package price (assuming package is in format "Package Name ₹XXXX")
+    const packagePrice = booking.package ? parseInt(booking.package.replace(/[^0-9]/g, '')) || 0 : 0;
+    
+    if (packagePrice < coupon.minOrderAmount) {
+      return res.status(400).json({ 
+        error: `Minimum order amount of ₹${coupon.minOrderAmount} required for this coupon`
+      });
+    }
+
+    // Calculate discount
+    let discountAmount = 0;
+    if (coupon.discountType === 'percentage') {
+      discountAmount = packagePrice * (coupon.discountValue / 100);
+    } else {
+      discountAmount = coupon.discountValue;
+    }
+
+    // Update booking with coupon details
+    booking.couponCode = coupon.code;
+    booking.discountAmount = discountAmount;
+    booking.finalAmount = packagePrice - discountAmount;
+    await booking.save();
+
+    // Increment coupon uses
+    await Coupon.findByIdAndUpdate(coupon._id, { $inc: { currentUses: 1 } });
+
+    res.json({ 
+      success: true,
+      discountAmount,
+      finalAmount: booking.finalAmount
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Get synced messages
 app.get('/api/admin/gmail-messages', authenticateAdmin, async (req, res) => {
