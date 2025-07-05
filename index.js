@@ -188,26 +188,26 @@ const couponSchema = new mongoose.Schema({
   code: { type: String, required: true, unique: true },
   discountType: { type: String, enum: ['percentage', 'fixed'], required: true },
   discountValue: { type: Number, required: true },
-  minOrderAmount: { type: Number, default: 0 },
   validFrom: { type: Date, required: true },
   validUntil: { type: Date, required: true },
-  maxUses: { type: Number, default: null },
+  maxUses: { type: Number, default: null }, // null means unlimited
   currentUses: { type: Number, default: 0 },
   isActive: { type: Boolean, default: true },
-  createdAt: { type: Date, default: Date.now },
-  createdBy: { type: String, required: true }
+  createdBy: { type: String, required: true },
+  targetUsers: { type: [String], default: [] } // Array of user emails
 });
 
 // Coupon Banner Schema
-const couponBannerSchema = new mongoose.Schema({
-  imageUrl: { type: String, required: true },
+const bannerSchema = new mongoose.Schema({
   title: { type: String, required: true },
   subtitle: { type: String },
+  imageUrl: { type: String, required: true },
   couponCode: { type: String },
+  targetUsers: { type: [String], default: [] }, // Empty array means all users
   isActive: { type: Boolean, default: true },
-  targetUsers: { type: [String], default: [] },
   createdAt: { type: Date, default: Date.now }
 });
+const Banner = mongoose.model('Banner', bannerSchema);
 
 // Email Template Schema
 const emailTemplateSchema = new mongoose.Schema({
@@ -477,6 +477,36 @@ app.post('/api/admin/coupon-banners', authenticateAdmin, upload.single('bannerIm
     res.json({ success: true, banner });
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+});
+app.post('/api/coupons/validate', async (req, res) => {
+  try {
+    const { code, email } = req.body;
+    
+    const coupon = await Coupon.findOne({ 
+      code,
+      isActive: true,
+      validFrom: { $lte: new Date() },
+      validUntil: { $gte: new Date() },
+      $or: [
+        { targetUsers: [] }, // Available to all
+        { targetUsers: email } // Or specifically to this user
+      ],
+      $expr: { 
+        $or: [
+          { $eq: ["$maxUses", null] },
+          { $lt: ["$currentUses", "$maxUses"] }
+        ]
+      }
+    });
+
+    if (!coupon) {
+      return res.status(404).json({ error: 'Invalid or expired coupon' });
+    }
+
+    res.json({ valid: true, coupon });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
