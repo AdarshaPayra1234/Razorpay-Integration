@@ -11,11 +11,10 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const imap = require('imap');
-const router = express.Router();
 const { simpleParser } = require('mailparser');
 
 const app = express();
-const PORT = process.env.PORT || 8080; // Add this line
+const PORT = process.env.PORT || 8080;
 
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI, {
@@ -25,7 +24,67 @@ mongoose.connect(process.env.MONGODB_URI, {
 .then(() => console.log('Connected to MongoDB Atlas (booking_db)'))
 .catch((err) => console.error('MongoDB connection error:', err));
 
-// Enhanced Booking Schema
+// CORS Configuration
+const corsOptions = {
+  origin: ['https://jokercreation.store', 'http://localhost:3000'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+
+// Middleware
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
+
+// Razorpay Setup
+const razorpayInstance = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
+
+// File Upload Configuration
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const uploadDir = path.join(__dirname, 'uploads');
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+      cb(null, uploadDir);
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+    }
+  }),
+  limits: {
+    fileSize: 50 * 1024 * 1024 // 50MB limit per file
+  }
+});
+
+// Email Transporter
+const transporter = nodemailer.createTransport({
+  host: 'smtp.hostinger.com',
+  port: 465,
+  secure: true,
+  auth: {
+    user: 'contact@jokercreation.store',
+    pass: process.env.EMAIL_PASS
+  },
+  tls: { 
+    ciphers: 'SSLv3',
+    rejectUnauthorized: false
+  },
+  logger: true,
+  debug: true
+});
+
+// ==================== SCHEMAS ====================
+
+// Booking Schema
 const bookingSchema = new mongoose.Schema({
   customerName: String,
   customerEmail: { type: String, required: true },
@@ -42,10 +101,13 @@ const bookingSchema = new mongoose.Schema({
     default: 'pending' 
   },
   userId: String,
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
+  couponCode: String,
+  discountAmount: Number,
+  finalAmount: Number
 });
 
-// Enhanced Message Schema with rich text support
+// Message Schema
 const messageSchema = new mongoose.Schema({
   userEmail: { type: String, required: true },
   subject: { type: String, required: true },
@@ -72,7 +134,7 @@ const adminSchema = new mongoose.Schema({
   password: { type: String, required: true }
 });
 
-// Gallery Schema for image management
+// Gallery Schema
 const gallerySchema = new mongoose.Schema({
   name: String,
   description: String,
@@ -84,13 +146,13 @@ const gallerySchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 });
 
-// Settings Schema for admin panel
+// Settings Schema
 const settingsSchema = new mongoose.Schema({
   siteName: { type: String, default: 'Joker Creation Studio' },
   siteDescription: { type: String, default: 'Professional Photography Services' },
   contactEmail: { type: String, default: 'contact@jokercreation.com' },
   contactPhone: { type: String, default: '+1234567890' },
-  bookingLeadTime: { type: Number, default: 24 }, // in hours
+  bookingLeadTime: { type: Number, default: 24 },
   maxBookingsPerDay: { type: Number, default: 3 },
   cancellationPolicy: String,
   smtpHost: String,
@@ -107,11 +169,6 @@ const settingsSchema = new mongoose.Schema({
   depositPercentage: { type: Number, default: 30 }
 });
 
-const Booking = mongoose.model('Booking', bookingSchema);
-const Message = mongoose.model('Message', messageSchema);
-const Admin = mongoose.model('Admin', adminSchema);
-const Gallery = mongoose.model('Gallery', gallerySchema);
-const Settings = mongoose.model('Settings', settingsSchema);
 // Gmail Sync Schema
 const gmailSyncSchema = new mongoose.Schema({
   email: { type: String, required: true },
@@ -126,12 +183,7 @@ const gmailSyncSchema = new mongoose.Schema({
   syncedAt: { type: Date, default: Date.now }
 });
 
-const GmailSync = mongoose.model('GmailSync', gmailSyncSchema);
-
-// Add to your backend models
-// ===== COUPON ROUTES ===== //
-
-// Coupon Model (add with your other models)
+// Coupon Schema
 const couponSchema = new mongoose.Schema({
   code: { type: String, required: true, unique: true },
   discountType: { type: String, enum: ['percentage', 'fixed'], required: true },
@@ -146,9 +198,7 @@ const couponSchema = new mongoose.Schema({
   createdBy: { type: String, required: true }
 });
 
-const Coupon = mongoose.model('Coupon', couponSchema);
-
-// Coupon Banner Model
+// Coupon Banner Schema
 const couponBannerSchema = new mongoose.Schema({
   imageUrl: { type: String, required: true },
   title: { type: String, required: true },
@@ -159,9 +209,221 @@ const couponBannerSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-const CouponBanner = mongoose.model('CouponBanner', couponBannerSchema);
+// Email Template Schema
+const emailTemplateSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  subject: { type: String, required: true },
+  html: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
 
-// Coupon Routes
+// Create Models
+const Booking = mongoose.model('Booking', bookingSchema);
+const Message = mongoose.model('Message', messageSchema);
+const Admin = mongoose.model('Admin', adminSchema);
+const Gallery = mongoose.model('Gallery', gallerySchema);
+const Settings = mongoose.model('Settings', settingsSchema);
+const GmailSync = mongoose.model('GmailSync', gmailSyncSchema);
+const Coupon = mongoose.model('Coupon', couponSchema);
+const CouponBanner = mongoose.model('CouponBanner', couponBannerSchema);
+const EmailTemplate = mongoose.model('EmailTemplate', emailTemplateSchema);
+
+// ==================== MIDDLEWARE ====================
+
+const authenticateAdmin = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: 'Authorization header missing' });
+
+    const token = authHeader.split(' ')[1];
+    if (!token) return res.status(401).json({ error: 'Token missing' });
+
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      if (decoded.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+      req.admin = decoded;
+      return next();
+    } catch (tokenError) {
+      if (tokenError.name === 'TokenExpiredError') {
+        const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+        
+        if (!refreshToken) {
+          return res.status(401).json({ 
+            error: 'Token expired and no refresh token provided',
+            code: 'TOKEN_EXPIRED' 
+          });
+        }
+
+        try {
+          const refreshDecoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+          const admin = await Admin.findOne({ email: refreshDecoded.email });
+          
+          if (!admin) {
+            return res.status(401).json({ error: 'Invalid refresh token' });
+          }
+
+          const newToken = jwt.sign(
+            { email: admin.email, role: 'admin' },
+            process.env.JWT_SECRET,
+            { expiresIn: '1h' }
+          );
+
+          res.set('New-Access-Token', newToken);
+          req.admin = refreshDecoded;
+          return next();
+        } catch (refreshError) {
+          console.error('Refresh token error:', refreshError);
+          return res.status(401).json({ error: 'Invalid refresh token' });
+        }
+      }
+      throw tokenError;
+    }
+  } catch (err) {
+    console.error('Admin authentication error:', err);
+    if (err.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// Initialize Admin Account
+async function initializeAdmin() {
+  try {
+    console.log('Starting admin initialization...');
+    
+    const adminEmail = 'jokercreationbuisness@gmail.com';
+    let admin = await Admin.findOne({ email: adminEmail });
+    
+    if (!admin) {
+      console.log('Admin account not found, creating new one...');
+      const adminPassword = '9002405641';
+      const hashedPassword = await bcrypt.hash(adminPassword, 10);
+      
+      admin = new Admin({
+        email: adminEmail,
+        password: hashedPassword
+      });
+      
+      await admin.save();
+      console.log('Admin account created successfully');
+    }
+
+    let settings = await Settings.findOne();
+    
+    if (!settings) {
+      console.log('No settings found, creating default configuration...');
+      
+      settings = new Settings({
+        imapHost: 'imap.hostinger.com',
+        imapPort: 993,
+        imapUser: 'contact@jokercreation.store',
+        imapPass: process.env.EMAIL_PASS || '9002405641@Adarsha',
+        smtpHost: 'smtp.hostinger.com',
+        smtpPort: 465,
+        smtpUser: 'contact@jokercreation.store',
+        smtpPass: process.env.EMAIL_PASS || '9002405641@Adarsha',
+        fromEmail: 'contact@jokercreation.store',
+        siteName: 'Joker Creation Studio',
+        contactEmail: 'contact@jokercreation.store',
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+
+      await settings.save();
+      console.log('Default settings initialized successfully');
+    } else if (!settings.imapUser || !settings.imapPass) {
+      console.log('Existing settings found but IMAP not configured, updating...');
+      
+      settings.imapHost = 'imap.hostinger.com';
+      settings.imapPort = 993;
+      settings.imapUser = 'contact@jokercreation.store';
+      settings.imapPass = process.env.EMAIL_PASS || '9002405641@Adarsha';
+      settings.updatedAt = new Date();
+      
+      await settings.save();
+      console.log('IMAP settings updated successfully');
+    }
+
+    if (!process.env.EMAIL_PASS && !settings.imapPass) {
+      console.warn('WARNING: Email password not set in environment variables or settings');
+    }
+
+    console.log('Admin initialization completed successfully');
+    return { admin, settings };
+    
+  } catch (err) {
+    console.error('FATAL ERROR during initialization:', err);
+    throw new Error('Failed to initialize admin and settings');
+  }
+}
+
+// ==================== ROUTES ====================
+
+// Admin Login
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    const admin = await Admin.findOne({ email });
+    if (!admin) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    const isMatch = await bcrypt.compare(password, admin.password);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    const token = jwt.sign(
+      { email: admin.email, role: 'admin' },
+      process.env.JWT_SECRET,
+      { expiresIn: '8h' }
+    );
+    
+    res.json({ success: true, token });
+  } catch (err) {
+    console.error('Admin login error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Token Refresh
+app.post('/api/admin/refresh-token', async (req, res) => {
+  try {
+    const refreshToken = req.cookies.refreshToken;
+    if (!refreshToken) {
+      return res.status(401).json({ error: 'Refresh token missing' });
+    }
+
+    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    const admin = await Admin.findOne({ email: decoded.email });
+    
+    if (!admin) {
+      return res.status(401).json({ error: 'Invalid refresh token' });
+    }
+
+    const newToken = jwt.sign(
+      { email: admin.email, role: 'admin' },
+      process.env.JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+
+    res.json({ 
+      success: true, 
+      token: newToken 
+    });
+  } catch (err) {
+    console.error('Token refresh error:', err);
+    res.status(401).json({ error: 'Invalid refresh token' });
+  }
+});
+
+// ===== COUPON ROUTES ===== //
+
 app.post('/api/admin/coupons', authenticateAdmin, async (req, res) => {
   try {
     const coupon = new Coupon(req.body);
@@ -209,357 +471,7 @@ app.post('/api/admin/coupon-banners', authenticateAdmin, upload.single('bannerIm
     };
     const banner = new CouponBanner(bannerData);
     await banner.save();
-    res.json({ success: true, banner });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.get('/api/admin/coupon-banners', authenticateAdmin, async (req, res) => {
-  try {
-    const banners = await CouponBanner.find().sort({ createdAt: -1 });
-    res.json({ success: true, banners });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-
-// 1. First add CORS configuration
-// 1. First add CORS configuration
-const corsOptions = {
-  origin: ['https://jokercreation.store', 'http://localhost:3000'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'], // Added PATCH here
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
-  optionsSuccessStatus: 200
-};
-
-// 2. Apply CORS middleware
-app.use(cors(corsOptions));
-
-// 3. Handle OPTIONS requests for all routes
-app.options('*', cors(corsOptions));
-
-// 4. Then add other middleware
-app.use(bodyParser.json({ limit: '50mb' }));
-app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
-
-
-// ... rest of your server code
-
-// Razorpay Setup
-const razorpayInstance = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
-
-// Configure multer for file uploads
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => {
-      const uploadDir = path.join(__dirname, 'uploads');
-      if (!fs.existsSync(uploadDir)) {
-        fs.mkdirSync(uploadDir, { recursive: true });
-      }
-      cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-    }
-  }),
-  limits: {
-    fileSize: 50 * 1024 * 1024 // 50MB limit per file
-  }
-});
-
-// Email Transporter with improved configuration
-const transporter = nodemailer.createTransport({
-  host: 'smtp.hostinger.com',
-  port: 465,
-  secure: true,
-  auth: {
-    user: 'contact@jokercreation.store',
-    pass: process.env.EMAIL_PASS
-  },
-  tls: { 
-    ciphers: 'SSLv3',
-    rejectUnauthorized: false
-  },
-  logger: true,
-  debug: true
-});
-
-// Initialize admin account and default settings
-async function initializeAdmin() {
-  try {
-    console.log('Starting admin initialization...');
     
-    // 1. Check for existing admin
-    const adminEmail = 'jokercreationbuisness@gmail.com';
-    let admin = await Admin.findOne({ email: adminEmail });
-    
-    if (!admin) {
-      console.log('Admin account not found, creating new one...');
-      const adminPassword = '9002405641';
-      const hashedPassword = await bcrypt.hash(adminPassword, 10);
-      
-      admin = new Admin({
-        email: adminEmail,
-        password: hashedPassword
-      });
-      
-      await admin.save();
-      console.log('Admin account created successfully');
-    }
-
-    // 2. Initialize default settings
-    let settings = await Settings.findOne();
-    
-    if (!settings) {
-      console.log('No settings found, creating default configuration...');
-      
-      settings = new Settings({
-        imapHost: 'imap.hostinger.com',
-        imapPort: 993,
-        imapUser: 'contact@jokercreation.store',
-        imapPass: process.env.EMAIL_PASS || '9002405641@Adarsha',
-        smtpHost: 'smtp.hostinger.com',
-        smtpPort: 465,
-        smtpUser: 'contact@jokercreation.store',
-        smtpPass: process.env.EMAIL_PASS || '9002405641@Adarsha',
-        fromEmail: 'contact@jokercreation.store',
-        siteName: 'Joker Creation Studio',
-        contactEmail: 'contact@jokercreation.store',
-        createdAt: new Date(),
-        updatedAt: new Date()
-      });
-
-      await settings.save();
-      console.log('Default settings initialized successfully');
-    } else if (!settings.imapUser || !settings.imapPass) {
-      console.log('Existing settings found but IMAP not configured, updating...');
-      
-      settings.imapHost = 'imap.hostinger.com';
-      settings.imapPort = 993;
-      settings.imapUser = 'contact@jokercreation.store';
-      settings.imapPass = process.env.EMAIL_PASS || '9002405641@Adarsha';
-      settings.updatedAt = new Date();
-      
-      await settings.save();
-      console.log('IMAP settings updated successfully');
-    }
-
-    // 3. Verify critical settings
-    if (!process.env.EMAIL_PASS && !settings.imapPass) {
-      console.warn('WARNING: Email password not set in environment variables or settings');
-    }
-
-    console.log('Admin initialization completed successfully');
-    return { admin, settings };
-    
-  } catch (err) {
-    console.error('FATAL ERROR during initialization:', err);
-    throw new Error('Failed to initialize admin and settings');
-  }
-}
-
-
-// ===== AUTHENTICATION ROUTES ===== //
-
-app.post('/api/admin/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    
-    const admin = await Admin.findOne({ email });
-    if (!admin) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-    
-    const isMatch = await bcrypt.compare(password, admin.password);
-    if (!isMatch) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-    
-    const token = jwt.sign(
-      { email: admin.email, role: 'admin' },
-      process.env.JWT_SECRET,
-      { expiresIn: '8h' }
-    );
-    
-    res.json({ success: true, token });
-  } catch (err) {
-    console.error('Admin login error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-const authenticateAdmin = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: 'Authorization header missing' });
-
-    const token = authHeader.split(' ')[1];
-    if (!token) return res.status(401).json({ error: 'Token missing' });
-
-    try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      if (decoded.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
-      }
-      req.admin = decoded;
-      return next();
-    } catch (tokenError) {
-      if (tokenError.name === 'TokenExpiredError') {
-        // Check for refresh token in cookies or body
-        const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
-        
-        if (!refreshToken) {
-          return res.status(401).json({ 
-            error: 'Token expired and no refresh token provided',
-            code: 'TOKEN_EXPIRED' 
-          });
-        }
-
-        try {
-          const refreshDecoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-          const admin = await Admin.findOne({ email: refreshDecoded.email });
-          
-          if (!admin) {
-            return res.status(401).json({ error: 'Invalid refresh token' });
-          }
-
-          const newToken = jwt.sign(
-            { email: admin.email, role: 'admin' },
-            process.env.JWT_SECRET,
-            { expiresIn: '1h' }
-          );
-
-          // Set the new token in the response header
-          res.set('New-Access-Token', newToken);
-          req.admin = refreshDecoded;
-          return next();
-        } catch (refreshError) {
-          console.error('Refresh token error:', refreshError);
-          return res.status(401).json({ error: 'Invalid refresh token' });
-        }
-      }
-      throw tokenError;
-    }
-  } catch (err) {
-    console.error('Admin authentication error:', err);
-    if (err.name === 'JsonWebTokenError') {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-    res.status(500).json({ error: 'Internal server error' });
-  }
-};
-
-// 1. IMAP Configuration Check Endpoint
-app.get('/api/admin/check-imap-config', authenticateAdmin, async (req, res) => {
-  try {
-    const settings = await Settings.findOne();
-    
-    if (!settings) {
-      return res.json({ 
-        configured: false,
-        message: 'No settings found in database'
-      });
-    }
-
-    const configured = !!(settings.imapUser && settings.imapPass);
-    res.json({ 
-      configured,
-      imapHost: settings.imapHost,
-      imapPort: settings.imapPort
-    });
-    
-  } catch (err) {
-    console.error('imap config check error:', err);
-    res.status(500).json({ 
-      error: 'Failed to check imap configuration',
-      details: err.message 
-    });
-  }
-});
-
-// 3. Admin Settings Page Endpoint
-app.get('/admin', (req, res) => {
-  try {
-    res.sendFile(path.join(__dirname, 'public/admin.html'));
-  } catch (err) {
-    res.status(500).send('Error loading admin page');
-  }
-});
-
-// Add this to your backend routes
-// Current Settings Endpoint
-app.get('/api/admin/current-settings', authenticateAdmin, async (req, res) => {
-  try {
-    const settings = await Settings.findOne();
-    res.json(settings || {});
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-
-// ===== AUTHENTICATION ROUTES ===== //
-
-// ===== BOOKING ROUTES ===== //
-
-// ... (your existing booking routes continue here) ...
-// Coupon Routes
-router.post('/api/admin/coupons', authenticateAdmin, async (req, res) => {
-  try {
-    const coupon = new Coupon(req.body);
-    await coupon.save();
-    res.json({ success: true, coupon });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-router.get('/api/admin/coupons', authenticateAdmin, async (req, res) => {
-  try {
-    const coupons = await Coupon.find().sort({ createdAt: -1 });
-    res.json({ success: true, coupons });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.put('/api/admin/coupons/:id', authenticateAdmin, async (req, res) => {
-  try {
-    const coupon = await Coupon.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    res.json({ success: true, coupon });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-router.delete('/api/admin/coupons/:id', authenticateAdmin, async (req, res) => {
-  try {
-    await Coupon.findByIdAndDelete(req.params.id);
-    res.json({ success: true, message: 'Coupon deleted successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Coupon Banner Routes
-router.post('/api/admin/coupon-banners', authenticateAdmin, upload.single('bannerImage'), async (req, res) => {
-  try {
-    const bannerData = {
-      ...req.body,
-      imageUrl: `/uploads/${req.file.filename}`,
-      targetUsers: req.body.targetUsers ? JSON.parse(req.body.targetUsers) : []
-    };
-    const banner = new CouponBanner(bannerData);
-    await banner.save();
-    
-    // Send emails to targeted users
     await sendCouponBannerEmails(banner);
     
     res.json({ success: true, banner });
@@ -595,7 +507,7 @@ async function sendCouponBannerEmails(banner) {
 }
 
 // Public API for coupon validation
-router.get('/api/coupons/validate/:code', async (req, res) => {
+app.get('/api/coupons/validate/:code', async (req, res) => {
   try {
     const coupon = await Coupon.findOne({ 
       code: req.params.code,
@@ -627,13 +539,11 @@ router.get('/api/coupons/validate/:code', async (req, res) => {
 });
 
 // Apply coupon to booking
-// Updated /api/bookings/:id/apply-coupon route
-router.post('/api/bookings/:id/apply-coupon', async (req, res) => {
+app.post('/api/bookings/:id/apply-coupon', async (req, res) => {
   try {
     const { couponCode } = req.body;
     const { id } = req.params;
 
-    // Validate booking ID
     if (!id || !mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: 'Invalid booking ID' });
     }
@@ -644,7 +554,6 @@ router.post('/api/bookings/:id/apply-coupon', async (req, res) => {
       return res.status(404).json({ error: 'Booking not found' });
     }
 
-    // Validate coupon code exists
     if (!couponCode) {
       return res.status(400).json({ error: 'Coupon code is required' });
     }
@@ -664,7 +573,6 @@ router.post('/api/bookings/:id/apply-coupon', async (req, res) => {
       return res.status(400).json({ error: 'Invalid or expired coupon code' });
     }
 
-    // Calculate package price (assuming package is in format "Package Name ₹XXXX")
     const packagePrice = booking.package ? parseInt(booking.package.replace(/[^0-9]/g, '')) || 0 : 0;
     
     if (packagePrice < coupon.minOrderAmount) {
@@ -673,7 +581,6 @@ router.post('/api/bookings/:id/apply-coupon', async (req, res) => {
       });
     }
 
-    // Calculate discount
     let discountAmount = 0;
     if (coupon.discountType === 'percentage') {
       discountAmount = packagePrice * (coupon.discountValue / 100);
@@ -681,10 +588,8 @@ router.post('/api/bookings/:id/apply-coupon', async (req, res) => {
       discountAmount = coupon.discountValue;
     }
 
-    // Ensure discount doesn't exceed package price
     discountAmount = Math.min(discountAmount, packagePrice);
 
-    // Update booking with coupon details
     const updatedBooking = await Booking.findByIdAndUpdate(
       id,
       { 
@@ -695,7 +600,6 @@ router.post('/api/bookings/:id/apply-coupon', async (req, res) => {
       { new: true }
     );
 
-    // Increment coupon uses
     await Coupon.findByIdAndUpdate(coupon._id, { $inc: { currentUses: 1 } });
 
     res.json({ 
@@ -707,74 +611,6 @@ router.post('/api/bookings/:id/apply-coupon', async (req, res) => {
   } catch (err) {
     console.error('Error applying coupon:', err);
     res.status(500).json({ error: 'Failed to apply coupon' });
-  }
-});
-
-// Get synced messages
-app.get('/api/admin/gmail-messages', authenticateAdmin, async (req, res) => {
-  try {
-    const { page = 1, limit = 10, search } = req.query;
-    let query = { isIncoming: true };
-
-    if (search) {
-      const searchRegex = new RegExp(search, 'i');
-      query.$or = [
-        { userEmail: searchRegex },
-        { subject: searchRegex },
-        { message: searchRegex },
-        { from: searchRegex }
-      ];
-    }
-
-    const skip = (page - 1) * limit;
-    const messages = await Message.find(query)
-      .sort({ date: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-
-    const total = await Message.countDocuments(query);
-
-    res.json({
-      success: true,
-      messages,
-      total,
-      totalPages: Math.ceil(total / limit),
-      currentPage: parseInt(page)
-    });
-  } catch (err) {
-    console.error('Error fetching Gmail messages:', err);
-    res.status(500).json({ error: 'Failed to fetch messages' });
-  }
-});
-
-// Token refresh endpoint (for frontend)
-app.post('/api/admin/refresh-token', async (req, res) => {
-  try {
-    const refreshToken = req.cookies.refreshToken;
-    if (!refreshToken) {
-      return res.status(401).json({ error: 'Refresh token missing' });
-    }
-
-    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    const admin = await Admin.findOne({ email: decoded.email });
-    
-    if (!admin) {
-      return res.status(401).json({ error: 'Invalid refresh token' });
-    }
-
-    const newToken = jwt.sign(
-      { email: admin.email, role: 'admin' },
-      process.env.JWT_SECRET,
-      { expiresIn: '1h' }
-    );
-
-    res.json({ 
-      success: true, 
-      token: newToken 
-    });
-  } catch (err) {
-    console.error('Token refresh error:', err);
-    res.status(401).json({ error: 'Invalid refresh token' });
   }
 });
 
@@ -828,10 +664,8 @@ app.get('/api/admin/bookings/:id', authenticateAdmin, async (req, res) => {
       return res.status(404).json({ error: 'Booking not found' });
     }
     
-    // Ensure all required fields are included in the response
     const responseData = {
       ...booking.toObject(),
-      // Add any missing fields or format existing ones
       amount: booking.package ? booking.package.replace(/[^0-9]/g, '') : '0',
       bookingDates: booking.bookingDates || 'Not specified',
       createdAt: booking.createdAt.toLocaleString()
@@ -1043,9 +877,8 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
       size: file.size
     }));
 
-    // Create a single message document instead of multiple
     const newMessage = new Message({
-      userEmail: emails.join(','), // Store all emails as comma-separated string
+      userEmail: emails.join(','),
       subject,
       message,
       isHtml: isHtml === 'true',
@@ -1074,7 +907,7 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
       success: true, 
       message: {
         ...newMessage.toObject(),
-        _id: newMessage._id, // Ensure _id is included
+        _id: newMessage._id,
         attachments: newMessage.attachments.map(att => ({
           filename: att.filename,
           contentType: att.contentType,
@@ -1093,20 +926,7 @@ app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5
   }
 });
 
-// Add to your backend (index.js)
-
-// Email Template Schema
-const emailTemplateSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  subject: { type: String, required: true },
-  html: { type: String, required: true },
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now }
-});
-
-const EmailTemplate = mongoose.model('EmailTemplate', emailTemplateSchema);
-
-// Routes for template management
+// Email Template Routes
 app.get('/api/admin/email-templates', authenticateAdmin, async (req, res) => {
   try {
     const templates = await EmailTemplate.find().sort({ name: 1 });
@@ -1256,9 +1076,7 @@ app.delete('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
 
 // ===== INBOX ROUTES ===== //
 
-// Add this to your existing backend code (don't remove anything else)
-
-// Enhanced IMAP Email Fetching Function
+// IMAP Email Fetching
 async function fetchEmailsFromIMAP() {
   try {
     const settings = await Settings.findOne();
@@ -1291,11 +1109,11 @@ async function fetchEmailsFromIMAP() {
             return reject(err);
           }
 
-          const searchCriteria = ['UNSEEN']; // Only fetch unread messages
+          const searchCriteria = ['UNSEEN'];
           const fetchOptions = {
             bodies: ['HEADER', 'TEXT'],
             struct: true,
-            markSeen: false // Don't mark messages as seen
+            markSeen: false
           };
 
           imapConn.search(searchCriteria, (err, results) => {
@@ -1367,23 +1185,12 @@ async function fetchEmailsFromIMAP() {
     throw err;
   }
 }
-// Temporary test route
-app.get('/api/admin/test-imap', authenticateAdmin, async (req, res) => {
-  try {
-    const emails = await fetchEmailsFromIMAP();
-    console.log('Fetched emails:', emails.length);
-    res.json({ success: true, count: emails.length });
-  } catch (err) {
-    console.error('Test failed:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-// Enhanced Email Sync Endpoint
+
+// Email Sync Endpoint
 app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
   try {
     console.log('[SYNC] Starting email synchronization process...');
     
-    // First verify IMAP settings exist
     const settings = await Settings.findOne();
     if (!settings || !settings.imapUser || !settings.imapPass) {
       return res.status(400).json({
@@ -1393,7 +1200,6 @@ app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
       });
     }
 
-    // Step 1: Fetch emails from IMAP
     console.log('[SYNC] Fetching emails from IMAP server...');
     const emails = await fetchEmailsFromIMAP();
     console.log(`[SYNC] Found ${emails.length} emails in IMAP inbox`);
@@ -1402,17 +1208,12 @@ app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
     let skippedCount = 0;
     let errorCount = 0;
 
-    // Step 2: Process each email
     for (const [index, email] of emails.entries()) {
       try {
         console.log(`[SYNC] Processing email ${index + 1}/${emails.length}`);
         
-        // Parse the email
-        console.log('[SYNC] Parsing email content...');
         const parsed = await simpleParser(email.text);
         
-        // Check for existing message
-        console.log('[SYNC] Checking if message already exists in database...');
         const existingMessage = await Message.findOne({ 
           $or: [
             { messageId: email.messageId },
@@ -1430,7 +1231,6 @@ app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
           continue;
         }
 
-        // Prepare new message
         console.log('[SYNC] Creating new message document...');
         const fromAddress = parsed.from?.value?.[0]?.address || parsed.from?.text || 'unknown';
         const subject = parsed.subject || 'No Subject';
@@ -1446,7 +1246,6 @@ app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
           messageId: email.messageId
         });
 
-        // Handle attachments if present
         if (parsed.attachments && parsed.attachments.length > 0) {
           console.log(`[SYNC] Found ${parsed.attachments.length} attachments`);
           const uploadDir = path.join(__dirname, 'uploads', 'attachments');
@@ -1477,7 +1276,6 @@ app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
           }
         }
 
-        // Save the message
         console.log('[SYNC] Saving message to database...');
         await newMessage.save();
         savedMessages.push(newMessage);
@@ -1489,7 +1287,6 @@ app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
       }
     }
 
-    // Final summary
     console.log('[SYNC] Synchronization completed:');
     console.log(`- Total emails processed: ${emails.length}`);
     console.log(`- New messages saved: ${savedMessages.length}`);
@@ -1527,7 +1324,7 @@ app.post('/api/admin/inbox/sync', authenticateAdmin, async (req, res) => {
   }
 });
 
-// Enhanced Inbox Fetching
+// Inbox Fetching
 app.get('/api/admin/inbox', authenticateAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 20, search } = req.query;
@@ -1560,11 +1357,11 @@ app.get('/api/admin/inbox', authenticateAdmin, async (req, res) => {
           contentType: att.contentType,
           size: att.size
         }))
-      })),  // Fixed: Added missing parenthesis here
+      })),
       total,
       totalPages: Math.ceil(total / limit),
       currentPage: parseInt(page)
-    });  // Fixed: Properly closed the response object
+    });
   } catch (err) {
     console.error('Error fetching inbox:', err);
     res.status(500).json({ 
@@ -1777,14 +1574,10 @@ app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
 
 // ===== SETTINGS ROUTES ===== //
 
-// Add these routes to your backend (index.js)
-
-// Settings Page Route
 app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'public/admin.html'));
 });
 
-// Settings API Endpoint
 app.get('/api/admin/settings', authenticateAdmin, async (req, res) => {
   try {
     const settings = await Settings.findOne();
@@ -1794,7 +1587,6 @@ app.get('/api/admin/settings', authenticateAdmin, async (req, res) => {
   }
 });
 
-// Update Settings Endpoint
 app.put('/api/admin/settings', authenticateAdmin, async (req, res) => {
   try {
     const { imapHost, imapPort, imapUser, imapPass } = req.body;
@@ -1968,7 +1760,7 @@ app.get('/api/admin/search', authenticateAdmin, async (req, res) => {
   }
 });
 
-// ===== EXISTING USER ROUTES ===== //
+// ===== USER ROUTES ===== //
 
 app.get('/api/user-data', async (req, res) => {
   try {
@@ -2042,7 +1834,10 @@ app.post('/save-booking', async (req, res) => {
       preWeddingDate,
       address,
       transactionId,
-      userId
+      userId,
+      couponCode,
+      discountAmount,
+      finalAmount
     } = req.body;
 
     const newBooking = new Booking({
@@ -2056,7 +1851,10 @@ app.post('/save-booking', async (req, res) => {
       transactionId,
       paymentStatus: 'Paid',
       status: 'pending',
-      userId: userId || null
+      userId: userId || null,
+      couponCode: couponCode || null,
+      discountAmount: discountAmount || 0,
+      finalAmount: finalAmount || parseInt(package.replace(/[^0-9]/g, '')) || 0
     });
 
     await newBooking.save();
@@ -2094,6 +1892,9 @@ app.post('/save-booking', async (req, res) => {
       <div class="detail-item">
         <span class="detail-label">Package:</span> ${package}
       </div>
+      ${couponCode ? `<div class="detail-item">
+        <span class="detail-label">Coupon Code:</span> ${couponCode} (₹${discountAmount || 0} discount applied)
+      </div>` : ''}
       <div class="detail-item">
         <span class="detail-label">Wedding Date:</span> ${bookingDates}
       </div>
@@ -2101,13 +1902,13 @@ app.post('/save-booking', async (req, res) => {
         <span class="detail-label">Pre-Wedding Date:</span> ${preWeddingDate || 'To be scheduled'}
       </div>
       <div class="detail-item">
-        <span class="detail-label">Total Amount:</span> ₹${parseInt(package.replace(/[^0-9]/g, ''))}
+        <span class="detail-label">Total Amount:</span> ₹${parseInt(package.replace(/[^0-9]/g, '')) || 0}
       </div>
+      ${discountAmount ? `<div class="detail-item">
+        <span class="detail-label">Discount Amount:</span> ₹${discountAmount}
+      </div>` : ''}
       <div class="detail-item">
-        <span class="detail-label">Advance Payment:</span> ₹${parseInt(package.replace(/[^0-9]/g, '')) * 0.1}
-      </div>
-      <div class="detail-item">
-        <span class="detail-label">Remaining Amount:</span> ₹${parseInt(package.replace(/[^0-9]/g, '')) * 0.9}
+        <span class="detail-label">Final Amount:</span> ₹${finalAmount || parseInt(package.replace(/[^0-9]/g, '')) || 0}
       </div>
       <div class="detail-item">
         <span class="detail-label">Transaction ID:</span> ${transactionId}
@@ -2160,6 +1961,12 @@ app.post('/save-booking', async (req, res) => {
           </div>
           <div class="detail-item">
             <span class="detail-label">Package:</span> ${package}
+          </div>
+          ${couponCode ? `<div class="detail-item">
+            <span class="detail-label">Coupon Used:</span> ${couponCode} (₹${discountAmount || 0} discount)
+          </div>` : ''}
+          <div class="detail-item">
+            <span class="detail-label">Final Amount:</span> ₹${finalAmount || parseInt(package.replace(/[^0-9]/g, '')) || 0}
           </div>
           <div class="detail-item">
             <span class="detail-label">Event Dates:</span> ${bookingDates}
@@ -2304,6 +2111,12 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Initialize admin and start server
+initializeAdmin().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}).catch(err => {
+  console.error('Failed to initialize admin:', err);
+  process.exit(1);
 });
