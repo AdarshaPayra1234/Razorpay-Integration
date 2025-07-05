@@ -24,6 +24,20 @@ mongoose.connect(process.env.MONGODB_URI, {
 .then(() => console.log('Connected to MongoDB Atlas (booking_db)'))
 .catch((err) => console.error('MongoDB connection error:', err));
 
+// Add this middleware BEFORE your CORS setup
+app.use((req, res, next) => {
+  console.log('Incoming Request:', {
+    method: req.method,
+    url: req.originalUrl,
+    headers: req.headers,
+    ip: req.ip
+  });
+  next();
+});
+
+// Then add your existing CORS middleware
+app.use(cors(corsOptions));
+
 // CORS Configuration
 // Temporary debug CORS config (replace your current one)
 const corsOptions = {
