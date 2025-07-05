@@ -493,48 +493,55 @@ app.post('/api/admin/coupon-banners', authenticateAdmin, upload.single('bannerIm
 // Coupon Validation Endpoint
 app.post('/api/coupons/validate', async (req, res) => {
   try {
-    const { code, email } = req.body;
-    
-    // Find active coupon
-    const coupon = await Coupon.findOne({ 
-      code,
-      isActive: true,
-      validFrom: { $lte: new Date() },
-      validUntil: { $gte: new Date() },
-      $or: [
-        { targetUsers: [] }, // Available to all
-        { targetUsers: email } // Or specifically to this user
-      ],
-      $expr: { 
-        $or: [
-          { $eq: ["$maxUses", null] },
-          { $lt: ["$currentUses", "$maxUses"] }
-        ]
-      }
-    });
+    console.log('\n=== NEW VALIDATION REQUEST ===');
+    console.log('Request body:', req.body);
 
+    const { code, email = 'guest@example.com' } = req.body;
+    const now = new Date();
+    
+    // 1. Find the coupon
+    const coupon = await Coupon.findOne({ code });
+    console.log('Found coupon:', coupon);
+    
     if (!coupon) {
-      return res.status(404).json({ 
-        valid: false,
-        error: 'Invalid or expired coupon code' 
-      });
+      console.log('Coupon not found');
+      return res.json({ valid: false, error: 'Coupon not found' });
     }
 
+    // 2. Check activation status
+    if (!coupon.isActive) {
+      console.log('Coupon inactive');
+      return res.json({ valid: false, error: 'Coupon inactive' });
+    }
+
+    // 3. Check date validity
+    console.log(`Validity check: ${now} BETWEEN ${coupon.validFrom} AND ${coupon.validUntil}`);
+    if (now < coupon.validFrom || now > coupon.validUntil) {
+      console.log('Date validation failed');
+      return res.json({ valid: false, error: 'Coupon expired' });
+    }
+
+    // 4. Check target users
+    if (coupon.targetUsers?.length > 0 && !coupon.targetUsers.includes(email)) {
+      console.log(`Email ${email} not in target users`);
+      return res.json({ valid: false, error: 'Coupon not available for this user' });
+    }
+
+    // 5. Check usage limits
+    if (coupon.maxUses && coupon.currentUses >= coupon.maxUses) {
+      console.log(`Usage limit reached (${coupon.currentUses}/${coupon.maxUses})`);
+      return res.json({ valid: false, error: 'Coupon usage limit reached' });
+    }
+
+    console.log('Coupon is valid!');
     res.json({ 
       valid: true,
-      coupon: {
-        code: coupon.code,
-        discountType: coupon.discountType,
-        discountValue: coupon.discountValue,
-        minOrderAmount: coupon.minOrderAmount || 0
-      }
+      coupon: _.pick(coupon, ['code', 'discountType', 'discountValue', 'minOrderAmount'])
     });
+
   } catch (err) {
-    console.error('Coupon validation error:', err);
-    res.status(500).json({ 
-      valid: false,
-      error: 'Failed to validate coupon' 
-    });
+    console.error('Validation error:', err);
+    res.status(500).json({ valid: false, error: 'Server error' });
   }
 });
 
