@@ -1767,59 +1767,64 @@ app.post('/save-booking', async (req, res) => {
     await newBooking.save();
 
     const bookingConfirmationHtml = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <style>
-        body { font-family: 'Arial', sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-        .header { background-color: #00acc1; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }
-        .content { padding: 20px; background-color: #f9f9f9; border-radius: 0 0 5px 5px; }
-        .details { margin: 15px 0; }
-        .detail-item { margin-bottom: 10px; }
-        .detail-label { font-weight: bold; color: #00acc1; }
-        .footer { margin-top: 20px; font-size: 12px; text-align: center; color: #777; }
-        .logo { text-align: center; margin-bottom: 20px; }
-        .logo img { max-width: 150px; }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>Booking Details!</h1>
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: 'Arial', sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background-color: #00acc1; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }
+    .content { padding: 20px; background-color: #f9f9f9; border-radius: 0 0 5px 5px; }
+    .details { margin: 15px 0; }
+    .detail-item { margin-bottom: 10px; }
+    .detail-label { font-weight: bold; color: #00acc1; }
+    .logo { text-align: center; margin-bottom: 20px; }
+    .logo img { max-width: 150px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Booking Confirmation</h1>
+  </div>
+  <div class="content">
+    <div class="logo">
+      <img src="https://jokercreation.store/logo.png" alt="Joker Creation Studio">
+    </div>
+    <p>Dear ${customerName},</p>
+    <p>Thank you for choosing Joker Creation Studio for your photography needs. Your booking has been confirmed!</p>
+    
+    <div class="details">
+      <div class="detail-item">
+        <span class="detail-label">Booking ID:</span> ${newBooking._id}
       </div>
-      <div class="content">
-        <div class="logo">
-          <img src="https://jokercreation.store/logo.png" alt="Joker Creation Studio">
-        </div>
-        <p>Dear ${customerName},</p>
-        <p>Thank you for choosing Joker Creation Studio for your photography needs. Your booking has been confirmed!</p>
-        
-        <div class="details">
-          <div class="detail-item">
-            <span class="detail-label">Booking ID:</span> ${newBooking._id}
-          </div>
-          <div class="detail-item">
-            <span class="detail-label">Package:</span> ${package}
-          </div>
-          <div class="detail-item">
-            <span class="detail-label">Event Dates:</span> ${bookingDates}
-          </div>
-          <div class="detail-item">
-            <span class="detail-label">Advance Payment:</span> ₹${parseInt(package.replace(/[^0-9]/g, '')) * 0.1}
-          </div>
-          <div class="detail-item">
-            <span class="detail-label">Transaction ID:</span> ${transactionId}
-          </div>
-        </div>
-        
-        <p>We'll contact you shortly to discuss your event details. If you have any questions, please reply to this email.</p>
-        <p>Best regards,<br>The Joker Creation Studio Team</p>
+      <div class="detail-item">
+        <span class="detail-label">Package:</span> ${package}
       </div>
-      <div class="footer">
-        © 2025 Joker Creation Studio. All rights reserved.
+      <div class="detail-item">
+        <span class="detail-label">Wedding Date:</span> ${bookingDates}
       </div>
-    </body>
-    </html>
-    `;
+      <div class="detail-item">
+        <span class="detail-label">Pre-Wedding Date:</span> ${preWeddingDate || 'To be scheduled'}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Total Amount:</span> ₹${parseInt(package.replace(/[^0-9]/g, ''))}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Advance Payment:</span> ₹${parseInt(package.replace(/[^0-9]/g, '')) * 0.1}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Remaining Amount:</span> ₹${parseInt(package.replace(/[^0-9]/g, '')) * 0.9}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Transaction ID:</span> ${transactionId}
+      </div>
+    </div>
+    
+    <p>We'll contact you shortly to discuss your event details. If you have any questions, please reply to this email.</p>
+    <p>Best regards,<br>The Joker Creation Studio Team</p>
+  </div>
+</body>
+</html>
+`;
 
     await transporter.sendMail({
       from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
