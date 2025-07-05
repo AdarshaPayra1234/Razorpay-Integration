@@ -219,7 +219,6 @@ const couponBannerSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-const CouponBanner = mongoose.model('CouponBanner', couponBannerSchema);
 
 // Email Template Schema
 const emailTemplateSchema = new mongoose.Schema({
