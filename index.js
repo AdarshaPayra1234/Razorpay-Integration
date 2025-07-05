@@ -491,86 +491,46 @@ app.post('/api/admin/coupon-banners', authenticateAdmin, upload.single('bannerIm
   }
 });
 // Coupon Validation Endpoint
+// On your backend server (Node.js/Express)
 app.post('/api/coupons/validate', async (req, res) => {
   try {
-    console.log('\n=== NEW VALIDATION REQUEST ===');
-    console.log('Request body:', req.body);
-
-    const { code, email = 'guest@example.com' } = req.body;
-    const now = new Date();
+    const { code, email } = req.body;
     
-    // 1. Find the coupon
-    const coupon = await Coupon.findOne({ code });
-    console.log('Found coupon:', coupon);
-    
-    if (!coupon) {
-      console.log('Coupon not found');
-      return res.json({ valid: false, error: 'Coupon not found' });
-    }
-
-    // 2. Check activation status
-    if (!coupon.isActive) {
-      console.log('Coupon inactive');
-      return res.json({ valid: false, error: 'Coupon inactive' });
-    }
-
-    // 3. Check date validity
-    console.log(`Validity check: ${now} BETWEEN ${coupon.validFrom} AND ${coupon.validUntil}`);
-    if (now < coupon.validFrom || now > coupon.validUntil) {
-      console.log('Date validation failed');
-      return res.json({ valid: false, error: 'Coupon expired' });
-    }
-
-    // 4. Check target users
-    if (coupon.targetUsers?.length > 0 && !coupon.targetUsers.includes(email)) {
-      console.log(`Email ${email} not in target users`);
-      return res.json({ valid: false, error: 'Coupon not available for this user' });
-    }
-
-    // 5. Check usage limits
-    if (coupon.maxUses && coupon.currentUses >= coupon.maxUses) {
-      console.log(`Usage limit reached (${coupon.currentUses}/${coupon.maxUses})`);
-      return res.json({ valid: false, error: 'Coupon usage limit reached' });
-    }
-
-    console.log('Coupon is valid!');
-    res.json({ 
-      valid: true,
-      coupon: _.pick(coupon, ['code', 'discountType', 'discountValue', 'minOrderAmount'])
+    const coupon = await Coupon.findOne({
+      code,
+      isActive: true,
+      validFrom: { $lte: new Date() },
+      validUntil: { $gte: new Date() },
+      $or: [
+        { targetUsers: [] },
+        { targetUsers: email }
+      ]
     });
 
-  } catch (err) {
-    console.error('Validation error:', err);
-    res.status(500).json({ valid: false, error: 'Server error' });
+    if (!coupon) {
+      return res.status(404).json({ 
+        valid: false, 
+        error: 'Invalid or expired coupon code' 
+      });
+    }
+
+    res.json({
+      valid: true,
+      coupon: {
+        code: coupon.code,
+        discountType: coupon.discountType,
+        discountValue: coupon.discountValue,
+        minOrderAmount: coupon.minOrderAmount
+      }
+    });
+
+  } catch (error) {
+    res.status(500).json({ 
+      valid: false, 
+      error: 'Server error during validation' 
+    });
   }
 });
-
-async function sendCouponBannerEmails(banner) {
-  let users;
-  if (banner.targetUsers.length > 0) {
-    users = await Booking.distinct('customerEmail', { customerEmail: { $in: banner.targetUsers } });
-  } else {
-    users = await Booking.distinct('customerEmail');
-  }
-
-  for (const email of users) {
-    const mailOptions = {
-      from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
-      to: email,
-      subject: banner.title || 'Special Offer for You!',
-      html: `
-        <div style="max-width: 600px; margin: 0 auto; font-family: Arial, sans-serif;">
-          <h2 style="color: #00acc1;">${banner.title}</h2>
-          ${banner.subtitle ? `<p>${banner.subtitle}</p>` : ''}
-          <img src="${process.env.BASE_URL}${banner.imageUrl}" alt="Special Offer" style="max-width: 100%;">
-          ${banner.couponCode ? `<p style="margin-top: 20px;">Use coupon code: <strong>${banner.couponCode}</strong></p>` : ''}
-        </div>
-      `
-    };
-    await transporter.sendMail(mailOptions);
-  }
-}
-
 // Add to your server routes
 app.get('/api/coupons/debug/:code', async (req, res) => {
   const coupon = await Coupon.findOne({ code: req.params.code });
