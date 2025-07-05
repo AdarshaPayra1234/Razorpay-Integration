@@ -24,44 +24,70 @@ mongoose.connect(process.env.MONGODB_URI, {
 .then(() => console.log('Connected to MongoDB Atlas (booking_db)'))
 .catch((err) => console.error('MongoDB connection error:', err));
 
-// 3. Define CORS options (must come before use)
+// At the top of your backend file (right after your require statements)
+const allowedOrigins = [
+  'https://jokercreation.store',
+  'http://localhost:3000',
+  'https://jokercreation.store/payment.html',
+  'https://jokercreation.store/admin.html'
+];
+
 const corsOptions = {
-  origin: (origin, callback) => {
-    const allowedOrigins = [
-      'https://jokercreation.store',
-      'http://localhost:3000'
-    ];
-    
-    // Allow requests with no origin (like mobile apps or Postman)
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
-    if (allowedOrigins.includes(origin)) {
+    if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
     }
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'Access-Control-Request-Method',
+    'Access-Control-Request-Headers'
+  ],
+  exposedHeaders: [
+    'Content-Length',
+    'Date',
+    'X-Request-Id',
+    'Authorization',
+    'Access-Control-Allow-Origin'
+  ],
   credentials: true,
-  optionsSuccessStatus: 200
+  maxAge: 86400, // 24 hours
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 };
 
-// 4. Apply CORS middleware
+// Apply CORS middleware
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // Enable preflight for all routes
 
-// 5. Then add other middleware
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+// Handle preflight requests
+app.options('*', cors(corsOptions));
 
-// 6. Add debug middleware (optional)
+// Add this middleware to set headers for all responses
 app.use((req, res, next) => {
-  console.log('Incoming Request:', {
-    method: req.method,
-    url: req.originalUrl,
-    origin: req.headers.origin
-  });
+  // Set CORS headers
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  
+  // For preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+  
   next();
 });
 
