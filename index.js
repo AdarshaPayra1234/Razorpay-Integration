@@ -503,6 +503,64 @@ app.post('/api/admin/refresh-token', async (req, res) => {
   }
 });
 
+// PUT /api/admin/bookings/:id - Update booking details
+app.put('/api/admin/bookings/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+    
+    // Validate input
+    if (!updates || typeof updates !== 'object') {
+      return res.status(400).json({ message: 'Invalid update data' });
+    }
+
+    // Allowed fields to update
+    const allowedUpdates = {
+      customerName: true,
+      customerEmail: true,
+      customerPhone: true,
+      package: true,
+      bookingDates: true,
+      preWeddingDate: true,
+      address: true,
+      status: true,
+      paymentStatus: true,
+      paymentBreakdown: true,
+      notes: true
+    };
+
+    // Filter updates to only allowed fields
+    const filteredUpdates = {};
+    for (const key in updates) {
+      if (allowedUpdates[key]) {
+        filteredUpdates[key] = updates[key];
+      }
+    }
+
+    // Add audit info
+    filteredUpdates.updatedAt = new Date();
+    filteredUpdates.updatedBy = req.admin._id; // Assuming you have admin info in req
+
+    const booking = await Booking.findByIdAndUpdate(
+      id,
+      { $set: filteredUpdates },
+      { new: true, runValidators: true }
+    );
+
+    if (!booking) {
+      return res.status(404).json({ message: 'Booking not found' });
+    }
+
+    res.json({
+      message: 'Booking updated successfully',
+      booking
+    });
+  } catch (error) {
+    console.error('Error updating booking:', error);
+    res.status(500).json({ message: 'Error updating booking', error: error.message });
+  }
+});
+
 // ===== COUPON ROUTES ===== //
 
 app.post('/api/admin/coupons', authenticateAdmin, async (req, res) => {
