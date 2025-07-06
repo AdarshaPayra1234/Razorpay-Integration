@@ -725,25 +725,42 @@ app.get('/api/admin/coupons/:id/usage', authenticateAdmin, async (req, res) => {
   try {
     const couponId = req.params.id;
     
-    // 1. Find the coupon first
+    // 1. Find the coupon
     const coupon = await Coupon.findById(couponId);
     if (!coupon) {
       return res.status(404).json({ error: 'Coupon not found' });
     }
 
-    // 2. Find all bookings that used this coupon
+    // 2. Get all bookings using this coupon
     const bookings = await Booking.find({ couponCode: coupon.code })
       .select('customerName customerEmail createdAt originalAmount discountAmount finalAmount')
       .sort({ createdAt: -1 });
 
+    // 3. Update the coupon's currentUses count (real-time sync)
+    const currentUses = bookings.length;
+    await Coupon.findByIdAndUpdate(couponId, { 
+      $set: { currentUses } 
+    });
+
     res.json({
       success: true,
       coupon: {
+        _id: coupon._id,
         code: coupon.code,
         discountType: coupon.discountType,
-        discountValue: coupon.discountValue
+        discountValue: coupon.discountValue,
+        currentUses, // Send updated count
+        maxUses: coupon.maxUses,
+        validFrom: coupon.validFrom,
+        validUntil: coupon.validUntil
       },
-      bookings: bookings
+      bookings: bookings,
+      usageStats: {
+        current: currentUses,
+        remaining: coupon.maxUses > 0 ? coupon.maxUses - currentUses : 'Unlimited',
+        percentageUsed: coupon.maxUses > 0 ? 
+          Math.round((currentUses / coupon.maxUses) * 100) : 0
+      }
     });
 
   } catch (err) {
