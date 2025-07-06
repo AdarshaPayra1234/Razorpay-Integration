@@ -1914,6 +1914,12 @@ app.post('/save-booking', async (req, res) => {
   console.log('Booking data received:', req.body);
 
   try {
+    // Validate required fields first
+    if (!req.body.customerName || !req.body.customerEmail || !req.body.customerPhone || 
+        !req.body.package || !req.body.bookingDates || !req.body.address || !req.body.transactionId) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
     const {
       customerName,
       customerEmail,
@@ -1925,26 +1931,31 @@ app.post('/save-booking', async (req, res) => {
       transactionId,
       userId,
       couponCode,
-  discountAmount = 0,
-  finalAmount
-} = req.body;
+      discountAmount = 0,
+      finalAmount
+    } = req.body;
+
+    // Safely extract package price
+    const packagePrice = parseInt(package.toString().replace(/[^0-9]/g, '')) || 0;
+    const calculatedFinalAmount = finalAmount || packagePrice;
 
     const newBooking = new Booking({
-      customerName,
-      customerEmail,
-      customerPhone,
+      customerName: customerName.trim(),
+      customerEmail: customerEmail.trim(),
+      customerPhone: customerPhone.trim(),
       package,
       bookingDates,
-      preWeddingDate,
-      address,
+      preWeddingDate: preWeddingDate || undefined,
+      address: address.trim(),
       transactionId,
-      paymentStatus: 'Paid',
+      paymentStatus: 'completed',
       status: 'pending',
       userId: userId || null,
-      couponCode,
-  discountAmount,
-  finalAmount: finalAmount || packagePrice // fallback to package price if no discount
-});
+      couponCode: couponCode || undefined,
+      discountAmount: parseInt(discountAmount) || 0,
+      finalAmount: calculatedFinalAmount,
+      originalAmount: packagePrice
+    });
 
     await newBooking.save();
 
@@ -2081,9 +2092,13 @@ app.post('/save-booking', async (req, res) => {
       message: 'Booking saved successfully',
       booking: newBooking
     });
+
   } catch (err) {
     console.error('Error saving booking:', err);
-    res.status(500).json({ error: 'Failed to save booking' });
+    res.status(500).json({ 
+      error: 'Failed to save booking',
+      details: err.message 
+    });
   }
 });
 
