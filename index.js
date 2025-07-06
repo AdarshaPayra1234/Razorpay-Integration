@@ -1932,12 +1932,17 @@ app.post('/save-booking', async (req, res) => {
       userId,
       couponCode,
       discountAmount = 0,
-      finalAmount
+      finalAmount,
+      originalAmount,
+      paymentStatus,
+      remainingBalance,
+      paymentMethod
     } = req.body;
 
-    // Safely extract package price
-    const packagePrice = parseInt(package.toString().replace(/[^0-9]/g, '')) || 0;
+    // Safely extract package price if not provided
+    const packagePrice = originalAmount || parseInt(package.toString().replace(/[^0-9]/g, '')) || 0;
     const calculatedFinalAmount = finalAmount || packagePrice;
+    const calculatedRemainingBalance = remainingBalance || (calculatedFinalAmount - (paymentStatus === 'completed' ? calculatedFinalAmount : 0));
 
     const newBooking = new Booking({
       customerName: customerName.trim(),
@@ -1948,17 +1953,24 @@ app.post('/save-booking', async (req, res) => {
       preWeddingDate: preWeddingDate || undefined,
       address: address.trim(),
       transactionId,
-      paymentStatus: 'completed',
+      paymentStatus: paymentStatus || 'partially_paid',
       status: 'pending',
       userId: userId || null,
       couponCode: couponCode || undefined,
       discountAmount: parseInt(discountAmount) || 0,
       finalAmount: calculatedFinalAmount,
-      originalAmount: packagePrice
+      originalAmount: packagePrice,
+      paymentBreakdown: {
+        advancePaid: paymentStatus === 'completed' ? calculatedFinalAmount : calculatedFinalAmount - calculatedRemainingBalance,
+        remainingBalance: calculatedRemainingBalance,
+        dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
+        paymentMethod: paymentMethod || 'online'
+      }
     });
 
     await newBooking.save();
 
+    // Enhanced booking confirmation email with all details
     const bookingConfirmationHtml = `
 <!DOCTYPE html>
 <html>
@@ -1967,11 +1979,22 @@ app.post('/save-booking', async (req, res) => {
     body { font-family: 'Arial', sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
     .header { background-color: #00acc1; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }
     .content { padding: 20px; background-color: #f9f9f9; border-radius: 0 0 5px 5px; }
-    .details { margin: 15px 0; }
-    .detail-item { margin-bottom: 10px; }
-    .detail-label { font-weight: bold; color: #00acc1; }
+    .details { margin: 15px 0; border: 1px solid #ddd; padding: 15px; border-radius: 5px; }
+    .detail-item { margin-bottom: 10px; display: flex; }
+    .detail-label { font-weight: bold; color: #00acc1; min-width: 180px; }
     .logo { text-align: center; margin-bottom: 20px; }
     .logo img { max-width: 150px; }
+    .payment-info { background-color: #e8f5e9; padding: 15px; border-radius: 5px; margin: 20px 0; }
+    .payment-button { 
+      display: inline-block; 
+      background-color: #00acc1; 
+      color: white; 
+      padding: 10px 20px; 
+      text-decoration: none; 
+      border-radius: 5px; 
+      margin-top: 10px;
+    }
+    .discount-info { background-color: #fff8e1; padding: 10px; border-radius: 5px; margin: 10px 0; }
   </style>
 </head>
 <body>
@@ -1986,35 +2009,68 @@ app.post('/save-booking', async (req, res) => {
     <p>Thank you for choosing Joker Creation Studio for your photography needs. Your booking has been confirmed!</p>
     
     <div class="details">
+      <h3>Booking Details</h3>
       <div class="detail-item">
         <span class="detail-label">Booking ID:</span> ${newBooking._id}
       </div>
       <div class="detail-item">
         <span class="detail-label">Package:</span> ${package}
       </div>
-      ${couponCode ? `<div class="detail-item">
-        <span class="detail-label">Coupon Code:</span> ${couponCode} (₹${discountAmount || 0} discount applied)
-      </div>` : ''}
       <div class="detail-item">
         <span class="detail-label">Wedding Date:</span> ${bookingDates}
       </div>
+      ${preWeddingDate ? `<div class="detail-item">
+        <span class="detail-label">Pre-Wedding Date:</span> ${preWeddingDate}
+      </div>` : ''}
       <div class="detail-item">
-        <span class="detail-label">Pre-Wedding Date:</span> ${preWeddingDate || 'To be scheduled'}
+        <span class="detail-label">Address:</span> ${address}
+      </div>
+    </div>
+
+    ${couponCode ? `
+    <div class="discount-info">
+      <h3>Discount Applied</h3>
+      <div class="detail-item">
+        <span class="detail-label">Coupon Code:</span> ${couponCode}
       </div>
       <div class="detail-item">
-        <span class="detail-label">Total Amount:</span> ₹${parseInt(package.replace(/[^0-9]/g, '')) || 0}
+        <span class="detail-label">Discount Amount:</span> ₹${discountAmount}
       </div>
-      ${discountAmount ? `<div class="detail-item">
+    </div>
+    ` : ''}
+
+    <div class="payment-info">
+      <h3>Payment Summary</h3>
+      <div class="detail-item">
+        <span class="detail-label">Original Amount:</span> ₹${packagePrice}
+      </div>
+      ${couponCode ? `<div class="detail-item">
         <span class="detail-label">Discount Amount:</span> ₹${discountAmount}
       </div>` : ''}
       <div class="detail-item">
-        <span class="detail-label">Final Amount:</span> ₹${finalAmount || parseInt(package.replace(/[^0-9]/g, '')) || 0}
+        <span class="detail-label">Final Amount:</span> ₹${calculatedFinalAmount}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Amount Paid:</span> ₹${paymentStatus === 'completed' ? calculatedFinalAmount : calculatedFinalAmount - calculatedRemainingBalance}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Remaining Balance:</span> ₹${calculatedRemainingBalance}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Payment Status:</span> ${paymentStatus === 'completed' ? 'Fully Paid' : 'Partially Paid'}
       </div>
       <div class="detail-item">
         <span class="detail-label">Transaction ID:</span> ${transactionId}
       </div>
+      
+      ${paymentStatus !== 'completed' ? `
+      <p>To pay the remaining balance, please click the button below:</p>
+      <a href="https://jokercreation.store/payment?bookingId=${newBooking._id}" class="payment-button">
+        Pay Remaining ₹${calculatedRemainingBalance}
+      </a>
+      ` : ''}
     </div>
-    
+
     <p>We'll contact you shortly to discuss your event details. If you have any questions, please reply to this email.</p>
     <p>Best regards,<br>The Joker Creation Studio Team</p>
   </div>
@@ -2022,6 +2078,7 @@ app.post('/save-booking', async (req, res) => {
 </html>
 `;
 
+    // Send email to customer
     await transporter.sendMail({
       from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
       to: customerEmail,
@@ -2029,67 +2086,118 @@ app.post('/save-booking', async (req, res) => {
       html: bookingConfirmationHtml
     });
 
+    // Enhanced admin notification email
     const adminNotificationHtml = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <style>
-        body { font-family: 'Arial', sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-        .header { background-color: #ff5722; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }
-        .content { padding: 20px; background-color: #f9f9f9; border-radius: 0 0 5px 5px; }
-        .details { margin: 15px 0; }
-        .detail-item { margin-bottom: 10px; }
-        .detail-label { font-weight: bold; color: #ff5722; }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>New Booking Received</h1>
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: 'Arial', sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background-color: #ff5722; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }
+    .content { padding: 20px; background-color: #f9f9f9; border-radius: 0 0 5px 5px; }
+    .details { margin: 15px 0; border: 1px solid #ddd; padding: 15px; border-radius: 5px; }
+    .detail-item { margin-bottom: 10px; display: flex; }
+    .detail-label { font-weight: bold; color: #ff5722; min-width: 180px; }
+    .payment-summary { background-color: #ffebee; padding: 15px; border-radius: 5px; margin: 20px 0; }
+    .discount-info { background-color: #fff8e1; padding: 10px; border-radius: 5px; margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>New Booking Notification</h1>
+  </div>
+  <div class="content">
+    <p>A new booking has been created with the following details:</p>
+    
+    <div class="details">
+      <h3>Customer Details</h3>
+      <div class="detail-item">
+        <span class="detail-label">Name:</span> ${customerName}
       </div>
-      <div class="content">
-        <p>A new booking has been created:</p>
-        
-        <div class="details">
-          <div class="detail-item">
-            <span class="detail-label">Customer:</span> ${customerName}
-          </div>
-          <div class="detail-item">
-            <span class="detail-label">Email:</span> ${customerEmail}
-          </div>
-          <div class="detail-item">
-            <span class="detail-label">Phone:</span> ${customerPhone}
-          </div>
-          <div class="detail-item">
-            <span class="detail-label">Package:</span> ${package}
-          </div>
-          ${couponCode ? `<div class="detail-item">
-            <span class="detail-label">Coupon Used:</span> ${couponCode} (₹${discountAmount || 0} discount)
-          </div>` : ''}
-          <div class="detail-item">
-            <span class="detail-label">Final Amount:</span> ₹${finalAmount || parseInt(package.replace(/[^0-9]/g, '')) || 0}
-          </div>
-          <div class="detail-item">
-            <span class="detail-label">Event Dates:</span> ${bookingDates}
-          </div>
-          <div class="detail-item">
-            <span class="detail-label">Transaction ID:</span> ${transactionId}
-          </div>
-        </div>
+      <div class="detail-item">
+        <span class="detail-label">Email:</span> ${customerEmail}
       </div>
-    </body>
-    </html>
-    `;
+      <div class="detail-item">
+        <span class="detail-label">Phone:</span> ${customerPhone}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Address:</span> ${address}
+      </div>
+    </div>
 
+    <div class="details">
+      <h3>Booking Details</h3>
+      <div class="detail-item">
+        <span class="detail-label">Booking ID:</span> ${newBooking._id}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Package:</span> ${package}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Wedding Date:</span> ${bookingDates}
+      </div>
+      ${preWeddingDate ? `<div class="detail-item">
+        <span class="detail-label">Pre-Wedding Date:</span> ${preWeddingDate}
+      </div>` : ''}
+    </div>
+
+    ${couponCode ? `
+    <div class="discount-info">
+      <h3>Discount Applied</h3>
+      <div class="detail-item">
+        <span class="detail-label">Coupon Code:</span> ${couponCode}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Discount Amount:</span> ₹${discountAmount}
+      </div>
+    </div>
+    ` : ''}
+
+    <div class="payment-summary">
+      <h3>Payment Information</h3>
+      <div class="detail-item">
+        <span class="detail-label">Original Amount:</span> ₹${packagePrice}
+      </div>
+      ${couponCode ? `<div class="detail-item">
+        <span class="detail-label">Discount Applied:</span> ₹${discountAmount}
+      </div>` : ''}
+      <div class="detail-item">
+        <span class="detail-label">Final Amount:</span> ₹${calculatedFinalAmount}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Amount Paid:</span> ₹${paymentStatus === 'completed' ? calculatedFinalAmount : calculatedFinalAmount - calculatedRemainingBalance}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Remaining Balance:</span> ₹${calculatedRemainingBalance}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Payment Status:</span> ${paymentStatus === 'completed' ? 'Fully Paid' : 'Partially Paid'}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Transaction ID:</span> ${transactionId}
+      </div>
+      <div class="detail-item">
+        <span class="detail-label">Payment Method:</span> ${paymentMethod || 'online'}
+      </div>
+    </div>
+
+    <p>Please review this booking in the admin panel.</p>
+  </div>
+</body>
+</html>
+`;
+
+    // Send email to admin
     await transporter.sendMail({
       from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
       to: process.env.ADMIN_EMAIL,
-      subject: 'New Booking Notification',
+      subject: `New Booking: ${customerName} - ${package}`,
       html: adminNotificationHtml
     });
 
     res.status(200).json({ 
       success: true,
-      message: 'Booking saved successfully',
+      message: 'Booking saved and confirmation emails sent successfully',
       booking: newBooking
     });
 
