@@ -654,92 +654,169 @@ app.post('/api/bookings/:id/apply-coupon', async (req, res) => {
     const { couponCode } = req.body;
     const { id } = req.params;
 
+    // Validate booking ID
     if (!id || !mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ error: 'Invalid booking ID' });
-    }
-
-    const booking = await Booking.findById(id);
-    
-    if (!booking) {
-      return res.status(404).json({ error: 'Booking not found' });
-    }
-
-    if (!couponCode) {
-      return res.status(400).json({ error: 'Coupon code is required' });
-    }
-
-    // Find and validate the coupon
-    const coupon = await Coupon.findOne({ 
-      code: couponCode,
-      isActive: true,
-      validFrom: { $lte: new Date() },
-      validUntil: { $gte: new Date() },
-      $or: [
-        { maxUses: null }, // Unlimited uses
-        { maxUses: { $gt: { $ifNull: ["$currentUses", 0] } } } // Still has remaining uses
-      ]
-    });
-
-    if (!coupon) {
-      return res.status(400).json({ error: 'Invalid or expired coupon code, or usage limit reached' });
-    }
-
-    const packagePrice = booking.package ? parseInt(booking.package.replace(/[^0-9]/g, '')) || 0 : 0;
-    
-    if (packagePrice < coupon.minOrderAmount) {
       return res.status(400).json({ 
-        error: `Minimum order amount of ₹${coupon.minOrderAmount} required for this coupon`
+        error: 'Invalid booking ID',
+        code: 'INVALID_BOOKING_ID'
       });
     }
 
-    let discountAmount = 0;
-    if (coupon.discountType === 'percentage') {
-      discountAmount = packagePrice * (coupon.discountValue / 100);
-    } else {
-      discountAmount = coupon.discountValue;
+    // Validate coupon code presence
+    if (!couponCode || typeof couponCode !== 'string') {
+      return res.status(400).json({ 
+        error: 'Valid coupon code is required',
+        code: 'MISSING_COUPON_CODE'
+      });
     }
 
-    discountAmount = Math.min(discountAmount, packagePrice);
+    // Transaction for atomic operations
+    const session = await mongoose.startSession();
+    session.startTransaction();
 
-    // Update booking with coupon details
-    const updatedBooking = await Booking.findByIdAndUpdate(
-      id,
-      { 
-        couponCode: coupon.code,
-        discountAmount,
-        finalAmount: packagePrice - discountAmount,
-        originalAmount: packagePrice
-      },
-      { new: true }
-    );
-
-    // Increment coupon usage count
-    const updatedCoupon = await Coupon.findByIdAndUpdate(
-      coupon._id,
-      { $inc: { currentUses: 1 } },
-      { new: true }
-    );
-
-    // Check if we've reached the maximum uses and deactivate if needed
-    if (updatedCoupon.maxUses && updatedCoupon.currentUses >= updatedCoupon.maxUses) {
-      await Coupon.findByIdAndUpdate(coupon._id, { isActive: false });
-    }
-
-    res.json({ 
-      success: true,
-      booking: updatedBooking,
-      discountAmount,
-      finalAmount: updatedBooking.finalAmount,
-      couponStatus: {
-        currentUses: updatedCoupon.currentUses,
-        maxUses: updatedCoupon.maxUses,
-        isActive: updatedCoupon.isActive && 
-                 (!updatedCoupon.maxUses || updatedCoupon.currentUses < updatedCoupon.maxUses)
+    try {
+      const booking = await Booking.findById(id).session(session);
+      if (!booking) {
+        await session.abortTransaction();
+        return res.status(404).json({ 
+          error: 'Booking not found',
+          code: 'BOOKING_NOT_FOUND'
+        });
       }
-    });
+
+      // Check if coupon was already applied
+      if (booking.couponCode) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          error: 'A coupon has already been applied to this booking',
+          code: 'COUPON_ALREADY_APPLIED'
+        });
+      }
+
+      // Find and validate coupon with lock to prevent race conditions
+      const coupon = await Coupon.findOneAndUpdate(
+        { 
+          code: couponCode,
+          isActive: true,
+          validFrom: { $lte: new Date() },
+          validUntil: { $gte: new Date() },
+          $or: [
+            { maxUses: null },
+            { 
+              maxUses: { $gt: { $ifNull: ["$currentUses", 0] } },
+              $expr: { $lt: ["$currentUses", "$maxUses"] }
+            }
+          ]
+        },
+        { $inc: { currentUses: 1 } },
+        { new: true, session }
+      );
+
+      if (!coupon) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          error: 'Invalid, expired, or fully redeemed coupon code',
+          code: 'INVALID_COUPON'
+        });
+      }
+
+      // Calculate package price safely
+      const packagePrice = booking.package 
+        ? parseInt(booking.package.replace(/[^0-9]/g, '')) || 0 
+        : 0;
+
+      // Validate minimum order amount
+      if (coupon.minOrderAmount && packagePrice < coupon.minOrderAmount) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          error: `Minimum order amount of ₹${coupon.minOrderAmount} required for this coupon`,
+          code: 'MIN_ORDER_NOT_MET',
+          requiredAmount: coupon.minOrderAmount,
+          currentAmount: packagePrice
+        });
+      }
+
+      // Calculate discount
+      let discountAmount = coupon.discountType === 'percentage'
+        ? packagePrice * (coupon.discountValue / 100)
+        : coupon.discountValue;
+
+      // Apply maximum discount if specified
+      if (coupon.maxDiscount) {
+        discountAmount = Math.min(discountAmount, coupon.maxDiscount);
+      }
+
+      discountAmount = Math.min(discountAmount, packagePrice);
+      const finalAmount = packagePrice - discountAmount;
+
+      // Update booking with coupon details
+      const updatedBooking = await Booking.findByIdAndUpdate(
+        id,
+        { 
+          couponCode: coupon.code,
+          discountType: coupon.discountType,
+          discountValue: coupon.discountValue,
+          discountAmount,
+          finalAmount,
+          originalAmount: packagePrice,
+          discountDetails: {
+            description: coupon.description,
+            terms: coupon.terms,
+            appliedAt: new Date(),
+            validUntil: coupon.validUntil,
+            minOrderAmount: coupon.minOrderAmount,
+            maxDiscount: coupon.maxDiscount
+          }
+        },
+        { new: true, session }
+      );
+
+      // Deactivate coupon if max uses reached
+      if (coupon.maxUses && coupon.currentUses >= coupon.maxUses) {
+        await Coupon.findByIdAndUpdate(
+          coupon._id,
+          { isActive: false },
+          { session }
+        );
+      }
+
+      await session.commitTransaction();
+
+      res.json({ 
+        success: true,
+        booking: updatedBooking,
+        discount: {
+          amount: discountAmount,
+          type: coupon.discountType,
+          value: coupon.discountValue,
+          code: coupon.code
+        },
+        finalAmount,
+        couponStatus: {
+          currentUses: coupon.currentUses,
+          maxUses: coupon.maxUses,
+          isActive: coupon.isActive && 
+                  (!coupon.maxUses || coupon.currentUses < coupon.maxUses),
+          remainingUses: coupon.maxUses 
+            ? coupon.maxUses - coupon.currentUses 
+            : 'Unlimited'
+        }
+      });
+
+    } catch (err) {
+      await session.abortTransaction();
+      throw err;
+    } finally {
+      session.endSession();
+    }
+
   } catch (err) {
     console.error('Error applying coupon:', err);
-    res.status(500).json({ error: 'Failed to apply coupon' });
+    res.status(500).json({ 
+      error: 'Failed to apply coupon',
+      code: 'COUPON_APPLICATION_ERROR',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
   }
 });
 
