@@ -24,26 +24,40 @@ mongoose.connect(process.env.MONGODB_URI, {
 .then(() => console.log('Connected to MongoDB Atlas (booking_db)'))
 .catch((err) => console.error('MongoDB connection error:', err));
 
-// CORS Configuration - Modified for payment page compatibility
+// Enhanced CORS Configuration
 const corsOptions = {
   origin: ['https://jokercreation.store', 'http://localhost:3000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: [
-    'Content-Type', 
+    'Content-Type',
     'Authorization',
-    'X-Requested-With', // Added for payment page
-    'Accept' // Added for payment page
+    'X-Requested-With',
+    'Accept',
+    'X-CSRF-Token' // Added for additional security
   ],
   credentials: true,
-  optionsSuccessStatus: 204, // Changed to 204 for preflight
-  preflightContinue: false // Explicitly set
+  optionsSuccessStatus: 204,
+  preflightContinue: false,
+  maxAge: 86400 // Add caching for preflight requests (24 hours)
 };
 
-// Middleware - Keep your existing setup but add a specific payment route handler
+// Apply CORS middleware
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
 
-// Add this specific preflight handler for the payment endpoint
+// Special preflight handlers for specific endpoints
+app.options('*', cors(corsOptions)); // Handle all OPTIONS requests
+
+// Specific handler for coupon endpoints
+app.options('/api/coupons/*', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || 'https://jokercreation.store');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.status(204).end();
+});
+
+// Your existing payment endpoint handler (keep this unchanged)
 app.options('/api/coupons/validate', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', 'https://jokercreation.store');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -52,7 +66,7 @@ app.options('/api/coupons/validate', (req, res) => {
   res.status(204).end();
 });
 
-// Keep your existing body parser middleware
+// Body parser middleware (keep this unchanged)
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -706,22 +720,22 @@ app.post('/api/bookings/:id/apply-coupon', async (req, res) => {
 // In your backend code (Node.js/Express)
 
 // Get coupon usage details
+// Add this with your other routes
 app.get('/api/admin/coupons/:id/usage', authenticateAdmin, async (req, res) => {
   try {
     const couponId = req.params.id;
     
-    const bookings = await Booking.find({ couponCode: { $exists: true } })
-      .populate('userId', 'name email')
-      .sort({ createdAt: -1 });
-    
-    // Filter bookings that used this coupon
+    // 1. Find the coupon first
     const coupon = await Coupon.findById(couponId);
     if (!coupon) {
       return res.status(404).json({ error: 'Coupon not found' });
     }
-    
-    const couponBookings = bookings.filter(b => b.couponCode === coupon.code);
-    
+
+    // 2. Find all bookings that used this coupon
+    const bookings = await Booking.find({ couponCode: coupon.code })
+      .select('customerName customerEmail createdAt originalAmount discountAmount finalAmount')
+      .sort({ createdAt: -1 });
+
     res.json({
       success: true,
       coupon: {
@@ -729,18 +743,15 @@ app.get('/api/admin/coupons/:id/usage', authenticateAdmin, async (req, res) => {
         discountType: coupon.discountType,
         discountValue: coupon.discountValue
       },
-      bookings: couponBookings.map(b => ({
-        _id: b._id,
-        customerName: b.customerName,
-        customerEmail: b.customerEmail,
-        createdAt: b.createdAt,
-        originalAmount: b.originalAmount,
-        discountAmount: b.discountAmount,
-        finalAmount: b.finalAmount
-      }))
+      bookings: bookings
     });
+
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error in coupon usage endpoint:', err);
+    res.status(500).json({ 
+      error: 'Server error',
+      message: err.message 
+    });
   }
 });
 
