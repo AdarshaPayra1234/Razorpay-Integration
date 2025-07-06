@@ -706,7 +706,7 @@ app.post('/api/bookings/:id/apply-coupon', async (req, res) => {
 // In your backend code (Node.js/Express)
 
 // Get coupon usage details
-router.get('/api/admin/coupons/:id/usage', authenticateAdmin, async (req, res) => {
+app.get('/api/admin/coupons/:id/usage', authenticateAdmin, async (req, res) => {
   try {
     const couponId = req.params.id;
     
