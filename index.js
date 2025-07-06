@@ -745,7 +745,7 @@ app.get('/api/admin/coupons/:id/usage', authenticateAdmin, async (req, res) => {
 });
 
 // Record a payment for a booking
-router.post('/api/admin/bookings/:id/payment', authenticateAdmin, async (req, res) => {
+app.post('/api/admin/bookings/:id/payment', authenticateAdmin, async (req, res) => {
   try {
     const { amount, method, date } = req.body;
     const bookingId = req.params.id;
