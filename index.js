@@ -20,6 +20,9 @@ const PORT = process.env.PORT || 8080;
 mongoose.connect(process.env.MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
+  ssl: true,
+  retryWrites: true,
+  w: 'majority'
 })
 .then(() => console.log('Connected to MongoDB Atlas (booking_db)'))
 .catch((err) => console.error('MongoDB connection error:', err));
