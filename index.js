@@ -703,6 +703,102 @@ app.post('/api/bookings/:id/apply-coupon', async (req, res) => {
   }
 });
 
+// In your backend code (Node.js/Express)
+
+// Get coupon usage details
+router.get('/api/admin/coupons/:id/usage', authenticateAdmin, async (req, res) => {
+  try {
+    const couponId = req.params.id;
+    
+    const bookings = await Booking.find({ couponCode: { $exists: true } })
+      .populate('userId', 'name email')
+      .sort({ createdAt: -1 });
+    
+    // Filter bookings that used this coupon
+    const coupon = await Coupon.findById(couponId);
+    if (!coupon) {
+      return res.status(404).json({ error: 'Coupon not found' });
+    }
+    
+    const couponBookings = bookings.filter(b => b.couponCode === coupon.code);
+    
+    res.json({
+      success: true,
+      coupon: {
+        code: coupon.code,
+        discountType: coupon.discountType,
+        discountValue: coupon.discountValue
+      },
+      bookings: couponBookings.map(b => ({
+        _id: b._id,
+        customerName: b.customerName,
+        customerEmail: b.customerEmail,
+        createdAt: b.createdAt,
+        originalAmount: b.originalAmount,
+        discountAmount: b.discountAmount,
+        finalAmount: b.finalAmount
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Record a payment for a booking
+router.post('/api/admin/bookings/:id/payment', authenticateAdmin, async (req, res) => {
+  try {
+    const { amount, method, date } = req.body;
+    const bookingId = req.params.id;
+    
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    
+    // Initialize payment breakdown if not exists
+    if (!booking.paymentBreakdown) {
+      booking.paymentBreakdown = {
+        advancePaid: 0,
+        remainingBalance: booking.finalAmount || 0,
+        payments: []
+      };
+    }
+    
+    // Update payment details
+    booking.paymentBreakdown.advancePaid += amount;
+    booking.paymentBreakdown.remainingBalance -= amount;
+    
+    // Add payment record
+    booking.paymentBreakdown.payments.push({
+      amount,
+      method,
+      date: new Date(date),
+      recordedAt: new Date()
+    });
+    
+    // Update payment status if fully paid
+    if (booking.paymentBreakdown.remainingBalance <= 0) {
+      booking.paymentStatus = 'completed';
+    } else {
+      booking.paymentStatus = 'partially_paid';
+    }
+    
+    await booking.save();
+    
+    res.json({ 
+      success: true,
+      booking: {
+        _id: booking._id,
+        paymentStatus: booking.paymentStatus,
+        advancePaid: booking.paymentBreakdown.advancePaid,
+        remainingBalance: booking.paymentBreakdown.remainingBalance
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ===== BOOKING ROUTES ===== //
 
 app.get('/api/admin/bookings', authenticateAdmin, async (req, res) => {
