@@ -561,20 +561,27 @@ app.post('/api/admin/coupon-banners', authenticateAdmin, upload.single('bannerIm
 });
 // Coupon Validation Endpoint
 // On your backend server (Node.js/Express)
+// In your backend routes (where you have the coupon validation endpoint)
 app.post('/api/coupons/validate', async (req, res) => {
   try {
     const { code } = req.body;
+    
+    // Find the coupon with additional checks
     const coupon = await Coupon.findOne({
       code,
       isActive: true,
       validFrom: { $lte: new Date() },
-      validUntil: { $gte: new Date() }
+      validUntil: { $gte: new Date() },
+      $or: [
+        { maxUses: null }, // Unlimited uses
+        { maxUses: { $gt: { $ifNull: ["$currentUses", 0] } } // Still has remaining uses
+      ]
     });
 
     if (!coupon) {
       return res.status(404).json({ 
         valid: false, 
-        error: 'Invalid or expired coupon code' 
+        error: 'Invalid, expired, or fully redeemed coupon code' 
       });
     }
 
@@ -661,19 +668,20 @@ app.post('/api/bookings/:id/apply-coupon', async (req, res) => {
       return res.status(400).json({ error: 'Coupon code is required' });
     }
 
+    // Find and validate the coupon
     const coupon = await Coupon.findOne({ 
       code: couponCode,
       isActive: true,
       validFrom: { $lte: new Date() },
       validUntil: { $gte: new Date() },
       $or: [
-        { maxUses: null },
-        { maxUses: { $gt: { $ifNull: ["$currentUses", 0] } } }
+        { maxUses: null }, // Unlimited uses
+        { maxUses: { $gt: { $ifNull: ["$currentUses", 0] } } } // Still has remaining uses
       ]
     });
 
     if (!coupon) {
-      return res.status(400).json({ error: 'Invalid or expired coupon code' });
+      return res.status(400).json({ error: 'Invalid or expired coupon code, or usage limit reached' });
     }
 
     const packagePrice = booking.package ? parseInt(booking.package.replace(/[^0-9]/g, '')) || 0 : 0;
@@ -693,27 +701,111 @@ app.post('/api/bookings/:id/apply-coupon', async (req, res) => {
 
     discountAmount = Math.min(discountAmount, packagePrice);
 
+    // Update booking with coupon details
     const updatedBooking = await Booking.findByIdAndUpdate(
       id,
       { 
         couponCode: coupon.code,
         discountAmount,
-        finalAmount: packagePrice - discountAmount
+        finalAmount: packagePrice - discountAmount,
+        originalAmount: packagePrice
       },
       { new: true }
     );
 
-    await Coupon.findByIdAndUpdate(coupon._id, { $inc: { currentUses: 1 } });
+    // Increment coupon usage count
+    const updatedCoupon = await Coupon.findByIdAndUpdate(
+      coupon._id,
+      { $inc: { currentUses: 1 } },
+      { new: true }
+    );
+
+    // Check if we've reached the maximum uses and deactivate if needed
+    if (updatedCoupon.maxUses && updatedCoupon.currentUses >= updatedCoupon.maxUses) {
+      await Coupon.findByIdAndUpdate(coupon._id, { isActive: false });
+    }
 
     res.json({ 
       success: true,
       booking: updatedBooking,
       discountAmount,
-      finalAmount: updatedBooking.finalAmount
+      finalAmount: updatedBooking.finalAmount,
+      couponStatus: {
+        currentUses: updatedCoupon.currentUses,
+        maxUses: updatedCoupon.maxUses,
+        isActive: updatedCoupon.isActive && 
+                 (!updatedCoupon.maxUses || updatedCoupon.currentUses < updatedCoupon.maxUses)
+      }
     });
   } catch (err) {
     console.error('Error applying coupon:', err);
     res.status(500).json({ error: 'Failed to apply coupon' });
+  }
+});
+
+app.get('/api/coupons/status/:code', async (req, res) => {
+  try {
+    const coupon = await Coupon.findOne({ code: req.params.code });
+    
+    if (!coupon) {
+      return res.status(404).json({ error: 'Coupon not found' });
+    }
+
+    const now = new Date();
+    const isValid = coupon.isActive && 
+                   new Date(coupon.validFrom) <= now && 
+                   new Date(coupon.validUntil) >= now &&
+                   (!coupon.maxUses || coupon.currentUses < coupon.maxUses);
+
+    res.json({
+      code: coupon.code,
+      isActive: coupon.isActive,
+      currentUses: coupon.currentUses,
+      maxUses: coupon.maxUses,
+      validFrom: coupon.validFrom,
+      validUntil: coupon.validUntil,
+      isValid,
+      remainingUses: coupon.maxUses ? coupon.maxUses - coupon.currentUses : 'Unlimited'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+couponSchema.pre('save', function(next) {
+  if (this.maxUses && this.currentUses >= this.maxUses) {
+    this.isActive = false;
+  }
+  next();
+});
+
+const cron = require('node-cron');
+
+// Run every day at midnight
+cron.schedule('0 0 * * *', async () => {
+  try {
+    // Deactivate expired coupons
+    await Coupon.updateMany(
+      { 
+        validUntil: { $lt: new Date() },
+        isActive: true 
+      },
+      { isActive: false }
+    );
+    
+    // Deactivate coupons that reached max uses
+    await Coupon.updateMany(
+      { 
+        maxUses: { $ne: null },
+        currentUses: { $gte: '$maxUses' },
+        isActive: true 
+      },
+      { isActive: false }
+    );
+    
+    console.log('Coupon maintenance completed');
+  } catch (err) {
+    console.error('Error in coupon maintenance:', err);
   }
 });
 
