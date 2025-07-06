@@ -1934,15 +1934,26 @@ app.post('/save-booking', async (req, res) => {
       discountAmount = 0,
       finalAmount,
       originalAmount,
-      paymentStatus,
+      paymentStatus, // This should be one of: 'pending', 'partially_paid', 'completed', 'refunded', 'failed'
       remainingBalance,
       paymentMethod
     } = req.body;
 
+    // Convert frontend payment status to backend enum values
+    let backendPaymentStatus;
+    if (paymentStatus === 'Paid' || paymentStatus === 'completed') {
+      backendPaymentStatus = 'completed';
+    } else if (paymentStatus === 'Partially Paid' || paymentStatus === 'partially_paid') {
+      backendPaymentStatus = 'partially_paid';
+    } else {
+      backendPaymentStatus = 'pending'; // default
+    }
+
     // Safely extract package price if not provided
     const packagePrice = originalAmount || parseInt(package.toString().replace(/[^0-9]/g, '')) || 0;
     const calculatedFinalAmount = finalAmount || packagePrice;
-    const calculatedRemainingBalance = remainingBalance || (calculatedFinalAmount - (paymentStatus === 'completed' ? calculatedFinalAmount : 0));
+    const calculatedRemainingBalance = remainingBalance || 
+      (backendPaymentStatus === 'completed' ? 0 : packagePrice - (req.body.amountPaid || 0));
 
     const newBooking = new Booking({
       customerName: customerName.trim(),
@@ -1953,7 +1964,7 @@ app.post('/save-booking', async (req, res) => {
       preWeddingDate: preWeddingDate || undefined,
       address: address.trim(),
       transactionId,
-      paymentStatus: paymentStatus || 'partially_paid',
+      paymentStatus: backendPaymentStatus, // Use the converted status
       status: 'pending',
       userId: userId || null,
       couponCode: couponCode || undefined,
@@ -1961,7 +1972,7 @@ app.post('/save-booking', async (req, res) => {
       finalAmount: calculatedFinalAmount,
       originalAmount: packagePrice,
       paymentBreakdown: {
-        advancePaid: paymentStatus === 'completed' ? calculatedFinalAmount : calculatedFinalAmount - calculatedRemainingBalance,
+        advancePaid: backendPaymentStatus === 'completed' ? calculatedFinalAmount : calculatedFinalAmount - calculatedRemainingBalance,
         remainingBalance: calculatedRemainingBalance,
         dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
         paymentMethod: paymentMethod || 'online'
