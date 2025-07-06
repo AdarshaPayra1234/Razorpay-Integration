@@ -20,7 +20,7 @@
     "imapflow": "^1.0.0",
     "jsonwebtoken": "^9.0.2",
     "mailparser": "^3.6.4",
-    "mongoose": "^5.10.9",
+    "mongoose": "^8.3.2",
     "multer": "^1.4.5-lts.1",
     "nodemailer": "^6.6.0",
     "node-cron": "^3.0.2",
