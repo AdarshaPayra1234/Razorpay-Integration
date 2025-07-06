@@ -561,11 +561,18 @@ app.post('/api/admin/coupon-banners', authenticateAdmin, upload.single('bannerIm
 });
 // Coupon Validation Endpoint
 // On your backend server (Node.js/Express)
-// In your backend routes (where you have the coupon validation endpoint)
 app.post('/api/coupons/validate', async (req, res) => {
   try {
     const { code } = req.body;
     
+    // Input validation
+    if (!code || typeof code !== 'string' || code.trim().length === 0) {
+      return res.status(400).json({ 
+        valid: false,
+        error: 'Invalid coupon code format'
+      });
+    }
+
     // Find the coupon with additional checks
     const coupon = await Coupon.findOne({
       code,
@@ -574,7 +581,10 @@ app.post('/api/coupons/validate', async (req, res) => {
       validUntil: { $gte: new Date() },
       $or: [
         { maxUses: null }, // Unlimited uses
-        { maxUses: { $gt: { $ifNull: ["$currentUses", 0] } } // Still has remaining uses
+        { 
+          maxUses: { $gt: { $ifNull: ["$currentUses", 0] } },
+          $expr: { $lt: ["$currentUses", "$maxUses"] }
+        }
       ]
     });
 
@@ -595,7 +605,11 @@ app.post('/api/coupons/validate', async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Coupon validation error:', error);
+    res.status(500).json({ 
+      error: 'Server error',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 // Add to your server routes
