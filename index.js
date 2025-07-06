@@ -872,13 +872,13 @@ cron.schedule('0 0 * * *', async () => {
     
     // Deactivate coupons that reached max uses
     await Coupon.updateMany(
-      { 
-        maxUses: { $ne: null },
-        currentUses: { $gte: '$maxUses' },
-        isActive: true 
-      },
-      { isActive: false }
-    );
+  { 
+    maxUses: { $ne: null },
+    currentUses: { $gte: '$maxUses' }, // <--- THIS LINE is wrong and likely causing the error
+    isActive: true 
+  },
+  { isActive: false }
+);
     
     console.log('Coupon maintenance completed');
   } catch (err) {
