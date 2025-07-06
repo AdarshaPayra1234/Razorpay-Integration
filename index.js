@@ -17,15 +17,13 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 // MongoDB Connection
-mongoose.connect(process.env.MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-  ssl: true,
-  retryWrites: true,
-  w: 'majority'
-})
-.then(() => console.log('Connected to MongoDB Atlas (booking_db)'))
-.catch((err) => console.error('MongoDB connection error:', err));
+mongoose.connect(process.env.MONGODB_URI)
+  .then(() => console.log('✅ Connected to MongoDB Atlas (booking_db)'))
+  .catch((err) => {
+    console.error('❌ MongoDB connection error:', err);
+    process.exit(1); // Optional: exit on connection failure
+  });
+
 
 // Enhanced CORS Configuration
 const corsOptions = {
