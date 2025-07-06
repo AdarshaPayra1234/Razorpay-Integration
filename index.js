@@ -565,33 +565,33 @@ app.post('/api/coupons/validate', async (req, res) => {
   try {
     const { code } = req.body;
     
-    // Input validation
-    if (!code || typeof code !== 'string' || code.trim().length === 0) {
+    if (!code || typeof code !== 'string') {
       return res.status(400).json({ 
-        valid: false,
-        error: 'Invalid coupon code format'
+        valid: false, 
+        error: 'Coupon code is required' 
       });
     }
 
-    // Find the coupon with additional checks
-    const coupon = await Coupon.findOne({
+    // First find the coupon
+    const coupon = await Coupon.findOne({ 
       code,
       isActive: true,
       validFrom: { $lte: new Date() },
-      validUntil: { $gte: new Date() },
-      $or: [
-        { maxUses: null }, // Unlimited uses
-        { 
-          maxUses: { $gt: { $ifNull: ["$currentUses", 0] } },
-          $expr: { $lt: ["$currentUses", "$maxUses"] }
-        }
-      ]
+      validUntil: { $gte: new Date() }
     });
 
     if (!coupon) {
       return res.status(404).json({ 
         valid: false, 
-        error: 'Invalid, expired, or fully redeemed coupon code' 
+        error: 'Coupon not found or expired' 
+      });
+    }
+
+    // Then check usage limits
+    if (coupon.maxUses !== null && coupon.currentUses >= coupon.maxUses) {
+      return res.status(400).json({ 
+        valid: false,
+        error: 'Coupon has reached maximum usage limit'
       });
     }
 
@@ -601,13 +601,15 @@ app.post('/api/coupons/validate', async (req, res) => {
         code: coupon.code,
         discountType: coupon.discountType,
         discountValue: coupon.discountValue,
-        minOrderAmount: coupon.minOrderAmount || 0
+        minOrderAmount: coupon.minOrderAmount || 0,
+        maxUses: coupon.maxUses,
+        currentUses: coupon.currentUses
       }
     });
   } catch (error) {
     console.error('Coupon validation error:', error);
     res.status(500).json({ 
-      error: 'Server error',
+      error: 'Server error during coupon validation',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
