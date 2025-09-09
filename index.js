@@ -2721,6 +2721,106 @@ app.post('/contact-submit', (req, res) => {
   });
 });
 
+// Add to your backend server (Node.js/Express)
+app.post('/api/bookings/complete-payment', async (req, res) => {
+  try {
+    const { bookingId, transactionId, amount } = req.body;
+    
+    // Validate input
+    if (!bookingId || !transactionId || !amount) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required fields: bookingId, transactionId, amount' 
+      });
+    }
+
+    // Find the booking
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Booking not found' 
+      });
+    }
+
+    // Update payment details
+    booking.paymentBreakdown.advancePaid += parseFloat(amount);
+    booking.paymentBreakdown.remainingBalance -= parseFloat(amount);
+    
+    // Add payment record
+    booking.paymentBreakdown.payments.push({
+      amount: parseFloat(amount),
+      method: 'online',
+      date: new Date(),
+      transactionId: transactionId
+    });
+    
+    // Update payment status if fully paid
+    if (booking.paymentBreakdown.remainingBalance <= 0) {
+      booking.paymentStatus = 'completed';
+      booking.status = 'confirmed';
+    } else {
+      booking.paymentStatus = 'partially_paid';
+    }
+    
+    booking.updatedAt = new Date();
+    
+    await booking.save();
+    
+    res.json({ 
+      success: true,
+      message: 'Payment recorded successfully',
+      booking: {
+        _id: booking._id,
+        paymentStatus: booking.paymentStatus,
+        advancePaid: booking.paymentBreakdown.advancePaid,
+        remainingBalance: booking.paymentBreakdown.remainingBalance
+      }
+    });
+    
+  } catch (err) {
+    console.error('Error completing payment:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to complete payment',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// Add to your backend
+app.get('/api/user/bookings', async (req, res) => {
+  try {
+    const { email } = req.query;
+    
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    
+    const bookings = await Booking.find({ customerEmail: email })
+      .sort({ createdAt: -1 })
+      .select('customerName package bookingDates paymentStatus paymentBreakdown finalAmount createdAt');
+    
+    res.json({ 
+      success: true, 
+      bookings: bookings.map(booking => ({
+        _id: booking._id,
+        package: booking.package,
+        bookingDates: booking.bookingDates,
+        paymentStatus: booking.paymentStatus,
+        amountPaid: booking.paymentBreakdown.advancePaid,
+        remainingBalance: booking.paymentBreakdown.remainingBalance,
+        finalAmount: booking.finalAmount,
+        createdAt: booking.createdAt,
+        status: booking.status
+      }))
+    });
+  } catch (err) {
+    console.error('Error fetching user bookings:', err);
+    res.status(500).json({ error: 'Failed to fetch user bookings' });
+  }
+});
+
 // ===== PUBLIC GALLERY ROUTES ===== //
 
 app.get('/api/gallery', async (req, res) => {
@@ -2768,3 +2868,4 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
