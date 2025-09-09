@@ -2653,13 +2653,21 @@ app.post('/save-booking', async (req, res) => {
   }
 });
 
+// Make sure your /create-order endpoint looks like this:
 app.post('/create-order', (req, res) => {
   const { amount } = req.body;
+  
+  console.log('Creating order for amount:', amount);
+
+  // Validate amount
+  if (!amount || isNaN(amount) || amount <= 0) {
+    return res.status(400).json({ error: 'Invalid amount provided' });
+  }
 
   const options = {
-    amount: amount * 100,
+    amount: amount * 100, // Convert to paise
     currency: 'INR',
-    receipt: 'receipt#1',
+    receipt: 'receipt#' + Date.now(),
   };
 
   razorpayInstance.orders.create(options, (err, order) => {
@@ -2892,6 +2900,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
