@@ -131,6 +131,7 @@ const bookingSchema = new mongoose.Schema({
     enum: ['pending', 'partially_paid', 'completed', 'refunded', 'failed'],
     default: 'pending' 
   },
+  
   status: { 
     type: String, 
     enum: ['pending', 'confirmed', 'cancelled', 'completed', 'rescheduled'],
@@ -163,10 +164,16 @@ const bookingSchema = new mongoose.Schema({
   
   // Payment breakdown
   paymentBreakdown: {
-    advancePaid: Number,
-    remainingBalance: Number,
+    advancePaid: { type: Number, default: 0 },
+    remainingBalance: { type: Number, default: 0 },
     dueDate: Date,
-    paymentMethod: String
+    payments: [{
+      amount: Number,
+      method: String,
+      date: { type: Date, default: Date.now },
+      transactionId: String,
+      status: { type: String, default: 'completed' }
+    }]
   },
   
   // Audit fields
