@@ -2728,10 +2728,12 @@ app.post('/contact-submit', (req, res) => {
   });
 });
 
-// Add to your backend server (Node.js/Express)
+// Add this to your backend server code (Node.js/Express)
 app.post('/api/bookings/complete-payment', async (req, res) => {
   try {
     const { bookingId, transactionId, amount } = req.body;
+    
+    console.log('Payment completion request:', { bookingId, transactionId, amount });
     
     // Validate input
     if (!bookingId || !transactionId || !amount) {
@@ -2750,16 +2752,28 @@ app.post('/api/bookings/complete-payment', async (req, res) => {
       });
     }
 
+    // Convert amount to number
+    const paymentAmount = parseFloat(amount);
+    
     // Update payment details
-    booking.paymentBreakdown.advancePaid += parseFloat(amount);
-    booking.paymentBreakdown.remainingBalance -= parseFloat(amount);
+    if (!booking.paymentBreakdown) {
+      booking.paymentBreakdown = {
+        advancePaid: 0,
+        remainingBalance: booking.finalAmount || 0,
+        payments: []
+      };
+    }
+    
+    booking.paymentBreakdown.advancePaid += paymentAmount;
+    booking.paymentBreakdown.remainingBalance -= paymentAmount;
     
     // Add payment record
     booking.paymentBreakdown.payments.push({
-      amount: parseFloat(amount),
+      amount: paymentAmount,
       method: 'online',
       date: new Date(),
-      transactionId: transactionId
+      transactionId: transactionId,
+      status: 'completed'
     });
     
     // Update payment status if fully paid
@@ -2773,6 +2787,8 @@ app.post('/api/bookings/complete-payment', async (req, res) => {
     booking.updatedAt = new Date();
     
     await booking.save();
+    
+    console.log('Payment completed successfully for booking:', bookingId);
     
     res.json({ 
       success: true,
@@ -2875,4 +2891,5 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
