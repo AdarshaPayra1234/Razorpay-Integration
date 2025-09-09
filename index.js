@@ -2653,30 +2653,67 @@ app.post('/save-booking', async (req, res) => {
   }
 });
 
-// Make sure your /create-order endpoint looks like this:
-app.post('/create-order', (req, res) => {
-  const { amount } = req.body;
-  
-  console.log('Creating order for amount:', amount);
+// Update your create-order endpoint
+app.post('/create-order', async (req, res) => {
+  try {
+    const { amount, currency = 'INR' } = req.body;
+    
+    console.log('Creating order for amount:', amount);
 
-  // Validate amount
-  if (!amount || isNaN(amount) || amount <= 0) {
-    return res.status(400).json({ error: 'Invalid amount provided' });
-  }
-
-  const options = {
-    amount: amount * 100, // Convert to paise
-    currency: 'INR',
-    receipt: 'receipt#' + Date.now(),
-  };
-
-  razorpayInstance.orders.create(options, (err, order) => {
-    if (err) {
-      console.error('Error creating Razorpay order:', err);
-      return res.status(500).json({ error: 'Failed to create order' });
+    // Validate amount
+    if (!amount || isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ 
+        error: 'Invalid amount provided',
+        details: 'Amount must be a positive number'
+      });
     }
-    res.json({ id: order.id });
-  });
+
+    // Validate Razorpay instance
+    if (!razorpayInstance) {
+      return res.status(500).json({ 
+        error: 'Payment service not configured',
+        code: 'PAYMENT_SERVICE_UNAVAILABLE'
+      });
+    }
+
+    const options = {
+      amount: Math.round(amount * 100), // Convert to paise
+      currency: currency,
+      receipt: 'receipt_' + Date.now(),
+    };
+
+    // Use promise-based approach instead of callback
+    const order = await razorpayInstance.orders.create(options);
+    
+    console.log('Order created successfully:', order.id);
+    
+    res.json({
+      success: true,
+      order: {
+        id: order.id,
+        amount: order.amount,
+        currency: order.currency,
+        receipt: order.receipt
+      }
+    });
+
+  } catch (err) {
+    console.error('Error creating Razorpay order:', err);
+    
+    // More specific error handling
+    if (err.error && err.error.description) {
+      return res.status(400).json({ 
+        error: 'Payment gateway error',
+        details: err.error.description,
+        code: err.error.code
+      });
+    }
+    
+    res.status(500).json({ 
+      error: 'Failed to create order',
+      details: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+    });
+  }
 });
 
 app.post('/contact-submit', (req, res) => {
@@ -2900,6 +2937,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
