@@ -2729,84 +2729,60 @@ app.post('/contact-submit', (req, res) => {
 });
 
 // Add this to your backend server code (Node.js/Express)
-app.post('/api/bookings/complete-payment', async (req, res) => {
+app.post("/api/bookings/complete-payment", async (req, res) => {
   try {
     const { bookingId, transactionId, amount } = req.body;
-    
-    console.log('Payment completion request:', { bookingId, transactionId, amount });
     
     // Validate input
     if (!bookingId || !transactionId || !amount) {
       return res.status(400).json({ 
         success: false, 
-        error: 'Missing required fields: bookingId, transactionId, amount' 
+        error: "Missing required fields: bookingId, transactionId, amount" 
       });
     }
-
-    // Find the booking
+    
+    // Find and update the booking
     const booking = await Booking.findById(bookingId);
     if (!booking) {
       return res.status(404).json({ 
         success: false, 
-        error: 'Booking not found' 
+        error: "Booking not found" 
       });
     }
-
-    // Convert amount to number
-    const paymentAmount = parseFloat(amount);
     
-    // Update payment details
-    if (!booking.paymentBreakdown) {
-      booking.paymentBreakdown = {
-        advancePaid: 0,
-        remainingBalance: booking.finalAmount || 0,
-        payments: []
-      };
-    }
+    // Update payment information
+    booking.paymentBreakdown.advancePaid += amount;
+    booking.paymentBreakdown.remainingBalance -= amount;
     
-    booking.paymentBreakdown.advancePaid += paymentAmount;
-    booking.paymentBreakdown.remainingBalance -= paymentAmount;
-    
-    // Add payment record
-    booking.paymentBreakdown.payments.push({
-      amount: paymentAmount,
-      method: 'online',
-      date: new Date(),
-      transactionId: transactionId,
-      status: 'completed'
-    });
-    
-    // Update payment status if fully paid
+    // If remaining balance is 0 or less, mark as completed
     if (booking.paymentBreakdown.remainingBalance <= 0) {
       booking.paymentStatus = 'completed';
       booking.status = 'confirmed';
-    } else {
-      booking.paymentStatus = 'partially_paid';
     }
     
-    booking.updatedAt = new Date();
+    // Add transaction ID if not already set
+    if (!booking.transactionId) {
+      booking.transactionId = transactionId;
+    }
     
     await booking.save();
     
-    console.log('Payment completed successfully for booking:', bookingId);
-    
+    // Return success response
     res.json({ 
       success: true,
-      message: 'Payment recorded successfully',
+      message: "Payment completed successfully",
       booking: {
-        _id: booking._id,
         paymentStatus: booking.paymentStatus,
         advancePaid: booking.paymentBreakdown.advancePaid,
         remainingBalance: booking.paymentBreakdown.remainingBalance
       }
     });
     
-  } catch (err) {
-    console.error('Error completing payment:', err);
+  } catch (error) {
+    console.error("Error completing payment:", error);
     res.status(500).json({ 
-      success: false,
-      error: 'Failed to complete payment',
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+      success: false, 
+      error: "Internal server error" 
     });
   }
 });
@@ -2891,5 +2867,6 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
