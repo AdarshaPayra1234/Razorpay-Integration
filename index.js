@@ -1584,6 +1584,10 @@ try {
 
     // Convert response data with enhanced error handling
     // Convert response data with enhanced error handling
+// Replace the problematic section in your /api/admin/webauthn/verify-registration route
+// Find this section around line 1636 and replace it with the corrected code below
+
+// Convert response data with enhanced error handling
 try {
   console.log('Converting response data...');
   
@@ -1628,9 +1632,11 @@ try {
   };
 
   console.log('Credential data conversion completed');
-
-      console.log('Client data string (first 20 chars):', clientDataJSONString?.substring(0, 20) + '...');
-      console.log('Attestation object string (first 20 chars):', attestationObjectString?.substring(0, 20) + '...');
+  console.log('Client data string (first 20 chars):', clientDataJSONString?.substring(0, 20) + '...');
+  console.log('Attestation object string (first 20 chars):', attestationObjectString?.substring(0, 20) + '...');
+  
+  // NOTE: Removed the duplicate variable declarations here
+  // The variables clientDataJSONBuffer and attestationObjectBuffer are already declared above
 
       // Convert the strings to buffers
       const clientDataJSONBuffer = base64urlToBuffer(clientDataJSONString);
@@ -5344,6 +5350,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
