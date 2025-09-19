@@ -1410,10 +1410,11 @@ app.get('/test-simplewebauthn', async (req, res) => {
 });
 
 // ===== VERIFY REGISTRATION ===== //
+// ===== VERIFY REGISTRATION =====
 app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnRateLimit, async (req, res) => {
   try {
     const { credential, deviceName, sessionId } = req.body;
-    
+
     console.log('=== WEB AUTHN VERIFICATION STARTED ===');
     console.log('Credential ID received:', credential?.id);
     console.log('Credential type:', typeof credential?.id);
@@ -1443,15 +1444,18 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
 
     console.log('Session check - Challenge exists:', !!expectedChallenge, 'Email exists:', !!adminEmail);
 
-    // Session restoration logic
+    // Session restoration if missing
     if (!expectedChallenge && sessionId) {
       console.log('Attempting to restore session from store...');
       try {
         const sessionData = await new Promise((resolve, reject) => {
-          req.sessionStore.get(sessionId, (err, session) => err ? reject(err) : resolve(session));
+          req.sessionStore.get(sessionId, (err, session) => {
+            if (err) reject(err);
+            else resolve(session);
+          });
         });
 
-        if (sessionData?.webauthnChallenge && sessionData?.webauthnEmail) {
+        if (sessionData && sessionData.webauthnChallenge && sessionData.webauthnEmail) {
           console.log('Session restored successfully');
           expectedChallenge = sessionData.webauthnChallenge;
           adminEmail = sessionData.webauthnEmail;
@@ -1460,7 +1464,9 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
           req.session.webauthnEmail = sessionData.webauthnEmail;
           req.session.webauthnTimestamp = sessionData.webauthnTimestamp || Date.now();
 
-          await new Promise((resolve, reject) => { req.session.save(err => err ? reject(err) : resolve()); });
+          await new Promise((resolve, reject) => {
+            req.session.save(err => err ? reject(err) : resolve());
+          });
         } else {
           throw new Error('Invalid session data in store');
         }
@@ -1500,44 +1506,50 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
     }
     console.log('Admin found:', admin.email);
 
-    // ===== DEBUGGING BASE64URL ===== //
-    console.log('Credential ID validation:', {
-      id: credential.id,
-      isValid: isValidBase64url(credential.id),
-      length: credential.id.length,
-      expectedLength: 43 // typical 32-byte ID → 43 chars
-    });
-
-    console.log('Raw ID validation:', {
-      rawId: credential.rawId,
-      isValid: isValidBase64url(credential.rawId),
-      length: credential.rawId.length
-    });
-
     // ===== DATA CONVERSION ===== //
     console.log('Converting credential data to proper formats...');
+
     let credentialIdBuffer;
     let credentialIdString;
 
     try {
-      if (credential.id && typeof credential.id === 'string') {
+      console.log('Credential ID from request:', credential.id);
+      console.log('Raw ID from request:', credential.rawId);
+
+      // Always convert rawId to buffer for verification
+      if (credential.rawId) {
+        if (typeof credential.rawId === 'string') {
+          credentialIdString = credential.rawId;
+          credentialIdBuffer = base64urlToBuffer(credentialIdString);
+        } else if (credential.rawId instanceof ArrayBuffer || credential.rawId instanceof Uint8Array) {
+          const uint8Array = credential.rawId instanceof Uint8Array ? credential.rawId : new Uint8Array(credential.rawId);
+          credentialIdBuffer = uint8Array;
+          credentialIdString = bufferToBase64url(uint8Array);
+        } else {
+          throw new Error('Invalid rawId format');
+        }
+      } else {
+        // fallback to credential.id
         credentialIdString = credential.id;
         credentialIdBuffer = base64urlToBuffer(credentialIdString);
-      } else if (credential.rawId && typeof credential.rawId === 'string') {
-        credentialIdString = credential.rawId;
-        credentialIdBuffer = base64urlToBuffer(credentialIdString);
-      } else if (credential.rawId && (credential.rawId instanceof ArrayBuffer || credential.rawId instanceof Uint8Array)) {
-        const uint8Array = credential.rawId instanceof Uint8Array ? credential.rawId : new Uint8Array(credential.rawId);
-        credentialIdBuffer = uint8Array;
-        credentialIdString = bufferToBase64url(uint8Array);
-      } else {
-        throw new Error('Invalid credential ID format');
       }
 
-      // Validate base64url
+      // Debugging
+      console.log('Credential ID validation:', {
+        id: credentialIdString,
+        isValid: isValidBase64url(credentialIdString),
+        length: credentialIdString.length,
+        expectedLength: 43
+      });
+
+      console.log('Raw ID validation:', {
+        rawId: bufferToBase64url(credentialIdBuffer),
+        isValid: isValidBase64url(bufferToBase64url(credentialIdBuffer)),
+        length: bufferToBase64url(credentialIdBuffer).length
+      });
+
       if (!isValidBase64url(credentialIdString)) throw new Error('Credential ID is not properly base64url encoded');
 
-      // Validate buffer length
       if (credentialIdBuffer.length < 16 || credentialIdBuffer.length > 1024) throw new Error('Credential ID has invalid length');
 
       console.log('Credential ID validation passed');
@@ -1551,32 +1563,35 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
       });
     }
 
-    // ===== CONVERT RESPONSE DATA ===== //
+    // ===== RESPONSE CONVERSION ===== //
     try {
-      if (!credential.response?.clientDataJSON || !credential.response?.attestationObject) {
-        throw new Error('Missing required response fields');
-      }
+      console.log('Converting response data...');
+      const { clientDataJSON, attestationObject } = credential.response;
 
-      const clientDataJSONString = typeof credential.response.clientDataJSON === 'string'
-        ? credential.response.clientDataJSON
-        : bufferToBase64url(credential.response.clientDataJSON);
+      if (!clientDataJSON || !attestationObject) throw new Error('Missing required response fields');
 
-      const attestationObjectString = typeof credential.response.attestationObject === 'string'
-        ? credential.response.attestationObject
-        : bufferToBase64url(credential.response.attestationObject);
+      const clientDataJSONBuffer = typeof clientDataJSON === 'string' ? base64urlToBuffer(clientDataJSON) : Buffer.from(clientDataJSON);
+      const attestationObjectBuffer = typeof attestationObject === 'string' ? base64urlToBuffer(attestationObject) : Buffer.from(attestationObject);
 
-      const clientDataJSONBuffer = base64urlToBuffer(clientDataJSONString);
-      const attestationObjectBuffer = base64urlToBuffer(attestationObjectString);
+      console.log('Client data length:', clientDataJSONBuffer.length);
+      console.log('Attestation object length:', attestationObjectBuffer.length);
+
       const expectedChallengeBuffer = base64urlToBuffer(expectedChallenge);
 
       const response = {
         id: credentialIdString,
         rawId: credentialIdBuffer,
-        response: { clientDataJSON: clientDataJSONBuffer, attestationObject: attestationObjectBuffer },
         type: credential.type || 'public-key',
+        response: {
+          clientDataJSON: clientDataJSONBuffer,
+          attestationObject: attestationObjectBuffer
+        },
         clientExtensionResults: credential.clientExtensionResults || {}
       };
 
+      console.log('Credential data conversion completed');
+
+      // ===== VERIFICATION ===== //
       console.log('Starting registration verification...');
       const verification = await verifyRegistrationResponse({
         response,
@@ -1584,6 +1599,12 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
         expectedOrigin: `https://${rpID}`,
         expectedRPID: rpID,
         requireUserVerification: true
+      });
+
+      console.log('Verification completed:', {
+        verified: verification.verified,
+        hasRegistrationInfo: !!verification.registrationInfo,
+        verificationError: verification.verificationError?.message
       });
 
       if (!verification.verified || !verification.registrationInfo) {
@@ -1596,12 +1617,14 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
         });
       }
 
-      // ===== STORE CREDENTIAL ===== //
+      // ===== CREDENTIAL STORAGE ===== //
       const { credentialPublicKey, credentialID, counter } = verification.registrationInfo;
+
       const credentialIDBase64 = bufferToBase64url(credentialID);
       const credentialPublicKeyBase64 = bufferToBase64url(credentialPublicKey);
 
-      if (admin.webauthnCredentials.find(c => c.credentialID === credentialIDBase64)) {
+      // Check for duplicates
+      if (admin.webauthnCredentials.find(cred => cred.credentialID === credentialIDBase64)) {
         return res.status(400).json({ 
           success: false,
           error: 'This security key is already registered',
@@ -1619,16 +1642,27 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
       });
 
       await admin.save();
+      console.log('Credential saved successfully to database');
+
+      // ===== CLEANUP ===== //
       req.session.webauthnChallenge = null;
       req.session.webauthnEmail = null;
-      await new Promise((resolve, reject) => { req.session.save(err => err ? reject(err) : resolve()); });
+      await new Promise((resolve, reject) => {
+        req.session.save(err => err ? reject(err) : resolve());
+      });
 
+      // ===== SUCCESS RESPONSE ===== //
       console.log('=== WEB AUTHN REGISTRATION COMPLETED SUCCESSFULLY ===');
       res.json({ 
-        success: true, 
-        message: 'Security key registered successfully', 
-        credential: { deviceName: deviceName.trim(), deviceType: 'platform', addedAt: new Date().toISOString() } 
+        success: true,
+        message: 'Security key registered successfully',
+        credential: {
+          deviceName: deviceName.trim(),
+          deviceType: 'platform',
+          addedAt: new Date().toISOString()
+        }
       });
+
     } catch (verificationError) {
       console.error('Verification process error:', verificationError);
       return res.status(400).json({ 
@@ -1642,13 +1676,14 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
   } catch (err) {
     console.error('❌ CRITICAL ERROR in verification:', err);
     res.status(500).json({ 
-      success: false, 
-      error: 'Failed to verify registration', 
-      code: 'VERIFICATION_ERROR', 
-      details: process.env.NODE_ENV === 'development' ? err.message : 'An unexpected error occurred' 
+      success: false,
+      error: 'Failed to verify registration',
+      code: 'VERIFICATION_ERROR',
+      details: process.env.NODE_ENV === 'development' ? err.message : 'An unexpected error occurred'
     });
   }
 });
+
 
 
 // Get admin's WebAuthn credentials
@@ -5188,6 +5223,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
