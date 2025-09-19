@@ -1,4 +1,12 @@
 require('dotenv').config();
+
+// ===== STARTUP ENVIRONMENT CHECK =====
+console.log('Environment check:', {
+  rpID: process.env.RP_ID,
+  origin: process.env.ORIGIN || `https://${process.env.RP_ID}`,
+  nodeEnv: process.env.NODE_ENV
+});
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -18,6 +26,7 @@ const admin = require('firebase-admin');
 const session = require('express-session');
 const rateLimit = require('express-rate-limit');
 const cron = require('node-cron');
+
 // Alternative import method
 const MongoStore = require('connect-mongo');
 // At the top of your file, update the import
@@ -35,6 +44,7 @@ console.log('SimpleWebAuthn imported:', {
   generateAuthenticationOptions: typeof generateAuthenticationOptions,
   verifyAuthenticationResponse: typeof verifyAuthenticationResponse
 });
+
 
 // ADD THE FUNCTION HERE - after requires, before routes
 // Replace the uint8ArrayToBase64url function with this improved version
@@ -5178,6 +5188,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
