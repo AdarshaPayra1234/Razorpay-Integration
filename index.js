@@ -12,8 +12,135 @@ const path = require('path');
 const fs = require('fs');
 const imap = require('imap');
 const { simpleParser } = require('mailparser');
+const axios = require('axios');
+const FormData = require('form-data');
+const admin = require('firebase-admin');
+const session = require('express-session');
+const rateLimit = require('express-rate-limit');
+const cron = require('node-cron');
+// Alternative import method
+const MongoStore = require('connect-mongo');
+// At the top of your file, update the import
+const {
+  generateRegistrationOptions,
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse
+} = require('@simplewebauthn/server');
+
+// Add this to verify the import works
+console.log('SimpleWebAuthn imported:', {
+  generateRegistrationOptions: typeof generateRegistrationOptions,
+  verifyRegistrationResponse: typeof verifyRegistrationResponse,
+  generateAuthenticationOptions: typeof generateAuthenticationOptions,
+  verifyAuthenticationResponse: typeof verifyAuthenticationResponse
+});
+
+// ADD THE FUNCTION HERE - after requires, before routes
+// Replace the uint8ArrayToBase64url function with this improved version
+function uint8ArrayToBase64url(input) {
+  // If it's already a string (base64url), return it as is
+  if (typeof input === 'string') {
+    return input;
+  }
+  
+  if (!input) {
+    throw new Error('Input is undefined');
+  }
+  
+  // Handle Buffer objects
+  if (Buffer.isBuffer(input)) {
+    return input.toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  }
+  
+  // Handle Uint8Array
+  if (input instanceof Uint8Array) {
+    return Buffer.from(input)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  }
+  
+  // Handle other array-like objects
+  if (Array.isArray(input) || input.length !== undefined) {
+    const uint8Array = new Uint8Array(input);
+    return Buffer.from(uint8Array)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  }
+  
+  throw new Error('Expected Uint8Array, Buffer, or string, got ' + typeof input);
+}
+
+// Add this function to convert base64url to buffer
+// Improved base64url to buffer conversion
+function base64urlToBuffer(base64urlString) {
+  console.log('Converting base64url to buffer:', base64urlString);
+  
+  // If it's already a buffer, return it
+  if (Buffer.isBuffer(base64urlString)) {
+    return base64urlString;
+  }
+  
+  // If it's a Uint8Array, convert to buffer
+  if (base64urlString instanceof Uint8Array) {
+    return Buffer.from(base64urlString);
+  }
+  
+  // Handle string input (base64url)
+  if (typeof base64urlString === 'string') {
+    // Convert base64url to base64
+    let base64 = base64urlString.replace(/-/g, '+').replace(/_/g, '/');
+    
+    // Add padding if needed
+    while (base64.length % 4) {
+      base64 += '=';
+    }
+    
+    try {
+      const buffer = Buffer.from(base64, 'base64');
+      console.log('Successfully converted to buffer, length:', buffer.length);
+      return buffer;
+    } catch (error) {
+      console.error('Error converting base64url to buffer:', error);
+      throw new Error('Invalid base64url string: ' + base64urlString);
+    }
+  }
+  
+  throw new Error('Unsupported input type for base64urlToBuffer: ' + typeof base64urlString);
+}
+
+// Enhanced buffer to base64url conversion
+function bufferToBase64url(buffer) {
+  if (Buffer.isBuffer(buffer)) {
+    return buffer.toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  }
+  
+  if (buffer instanceof Uint8Array) {
+    return Buffer.from(buffer)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  }
+  
+  throw new Error('Expected Buffer or Uint8Array, got: ' + typeof buffer);
+}
 
 const app = express();
+
+// FIX: Enable trust proxy for proper rate limiting behind reverse proxy
+app.set('trust proxy', true);
+
 const PORT = process.env.PORT || 8080;
 
 // MongoDB Connection
@@ -21,11 +148,11 @@ mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('✅ Connected to MongoDB Atlas (booking_db)'))
   .catch((err) => {
     console.error('❌ MongoDB connection error:', err);
-    process.exit(1); // Optional: exit on connection failure
+    process.exit(1);
   });
 
-
 // Enhanced CORS Configuration
+// Update your CORS configuration
 const corsOptions = {
   origin: ['https://jokercreation.store', 'http://localhost:3000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -34,29 +161,22 @@ const corsOptions = {
     'Authorization',
     'X-Requested-With',
     'Accept',
-    'X-CSRF-Token' // Added for additional security
+    'X-CSRF-Token',
+    'Cookie'
   ],
-  credentials: true,
+  credentials: true,  // This is crucial
   optionsSuccessStatus: 204,
   preflightContinue: false,
-  maxAge: 86400 // Add caching for preflight requests (24 hours)
+  maxAge: 86400
 };
 
-// Apply CORS middleware
 app.use(cors(corsOptions));
 
 // Special preflight handlers for specific endpoints
-app.options('*', cors(corsOptions)); // Handle all OPTIONS requests
+app.options('*', cors(corsOptions));
 
-// Specific handler for coupon endpoints
-app.options('/api/coupons/*', (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || 'https://jokercreation.store');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Max-Age', '86400');
-  res.status(204).end();
-});
+// Add specific handling for WebAuthn endpoints
+app.options('/api/admin/webauthn/*', cors(corsOptions));
 
 // Your existing payment endpoint handler (keep this unchanged)
 app.options('/api/coupons/validate', (req, res) => {
@@ -67,9 +187,82 @@ app.options('/api/coupons/validate', (req, res) => {
   res.status(204).end();
 });
 
-// Body parser middleware (keep this unchanged)
+const cookieParser = require('cookie-parser');
+
+// Body parser middleware
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
+
+// Trust first proxy (important for secure cookies)
+app.set('trust proxy', 1);
+
+app.use(cookieParser());
+
+// Session middleware configuration for production
+// Enhanced session configuration
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'your-webauthn-session-secret-key',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    maxAge: 24 * 60 * 60 * 1000,
+    path: '/'
+  },
+  store: MongoStore.create({
+    mongoUrl: process.env.MONGODB_URI,
+    collectionName: 'webauthn_sessions',
+    ttl: 24 * 60 * 60,
+    autoRemove: 'native'
+  }),
+  name: 'webauthn.sid',
+  rolling: true,
+  proxy: true // Trust the reverse proxy if present
+}));
+
+// ADD this middleware after session setup:
+// Debug middleware for cookies
+app.use((req, res, next) => {
+  console.log('Request received:', {
+    method: req.method,
+    url: req.url,
+    cookies: req.cookies,
+    sessionId: req.sessionID,
+    hasSession: !!req.session,
+    sessionData: req.session ? {
+      hasChallenge: !!req.session.webauthnChallenge,
+      hasEmail: !!req.session.webauthnEmail,
+      timestamp: req.session.webauthnTimestamp
+    } : null
+  });
+  next();
+});
+
+// WebAuthn configuration
+const rpID = process.env.RP_ID || 'jokercreation.store';
+const origin = process.env.ORIGIN || `https://${rpID}`;
+
+// Initialize Firebase Admin
+const serviceAccount = {
+  type: "service_account",
+  project_id: process.env.FIREBASE_PROJECT_ID,
+  private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+  private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+  client_email: process.env.FIREBASE_CLIENT_EMAIL,
+  client_id: process.env.FIREBASE_CLIENT_ID,
+  auth_uri: "https://accounts.google.com/o/oauth2/auth",
+  token_uri: "https://oauth2.googleapis.com/token",
+  auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+  client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL
+};
+
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+}
 
 // Razorpay Setup
 const razorpayInstance = new Razorpay({
@@ -79,21 +272,16 @@ const razorpayInstance = new Razorpay({
 
 // File Upload Configuration
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => {
-      const uploadDir = path.join(__dirname, 'uploads');
-      if (!fs.existsSync(uploadDir)) {
-        fs.mkdirSync(uploadDir, { recursive: true });
-      }
-      cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-    }
-  }),
+  storage: multer.memoryStorage(),
   limits: {
-    fileSize: 50 * 1024 * 1024 // 50MB limit per file
+    fileSize: 32 * 1024 * 1024
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'), false);
+    }
   }
 });
 
@@ -131,7 +319,6 @@ const bookingSchema = new mongoose.Schema({
     enum: ['pending', 'partially_paid', 'completed', 'refunded', 'failed'],
     default: 'pending' 
   },
-  
   status: { 
     type: String, 
     enum: ['pending', 'confirmed', 'cancelled', 'completed', 'rescheduled'],
@@ -147,41 +334,43 @@ const bookingSchema = new mongoose.Schema({
     enum: ['percentage', 'fixed', 'special', null],
     default: null
   },
-  discountValue: Number, // 10 for 10%, 2000 for ₹2000 off
-  originalAmount: Number, // Amount before any discounts
-  discountAmount: Number, // Calculated discount amount (₹)
-  finalAmount: Number, // originalAmount - discountAmount
+  discountValue: Number,
+  originalAmount: Number,
+  discountAmount: Number,
+  finalAmount: Number,
   
   // Detailed discount information
   discountDetails: {
-    description: String, // "Summer Special 10% Off"
-    terms: String, // "Valid until Dec 31, 2023"
+    description: String,
+    terms: String,
     appliedAt: { type: Date, default: Date.now },
     validUntil: Date,
-    minOrderAmount: Number, // Minimum order required for this discount
-    maxDiscount: Number // Maximum discount amount if applicable
+    minOrderAmount: Number,
+    maxDiscount: Number
   },
   
   // Payment breakdown
   paymentBreakdown: {
-    advancePaid: { type: Number, default: 0 },
-    remainingBalance: { type: Number, default: 0 },
+    advancePaid: Number,
+    remainingBalance: Number,
     dueDate: Date,
+    paymentMethod: String,
     payments: [{
       amount: Number,
       method: String,
-      date: { type: Date, default: Date.now },
+      date: Date,
       transactionId: String,
-      status: { type: String, default: 'completed' }
+      status: String
     }]
   },
   
   // Audit fields
   updatedAt: { type: Date, default: Date.now },
-  updatedBy: String, // "system" or admin ID
-  notes: String // Any special notes about this booking
+  updatedBy: String,
+  notes: String
+  
 }, {
-  timestamps: true // Automatically adds createdAt and updatedAt
+  timestamps: true
 });
 
 // Message Schema
@@ -208,17 +397,30 @@ const messageSchema = new mongoose.Schema({
 // Admin Schema
 const adminSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
-  password: { type: String, required: true }
+  password: { type: String, required: true },
+  webauthnCredentials: [{
+    credentialID: { type: String, required: true },
+    credentialPublicKey: { type: String, required: true },
+    counter: { type: Number, default: 0 },
+    deviceType: { type: String, default: 'unknown' },
+    deviceName: { type: String, default: 'Unnamed Device' },
+    addedAt: { type: Date, default: Date.now }
+  }]
 });
 
-// Gallery Schema
 const gallerySchema = new mongoose.Schema({
   name: String,
   description: String,
-  category: { type: String, enum: ['portraits', 'events', 'products', 'other'] },
+  category: { 
+    type: String, 
+    enum: ['portraits', 'events', 'products', 'other', 'uploads'], 
+    default: 'other' 
+  },
   featured: { type: Boolean, default: false },
   imageUrl: { type: String, required: true },
   thumbnailUrl: String,
+  deleteUrl: String,
+  imgbbId: String,
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
@@ -267,11 +469,11 @@ const couponSchema = new mongoose.Schema({
   discountValue: { type: Number, required: true },
   validFrom: { type: Date, required: true },
   validUntil: { type: Date, required: true },
-  maxUses: { type: Number, default: null }, // null means unlimited
+  maxUses: { type: Number, default: null },
   currentUses: { type: Number, default: 0 },
   isActive: { type: Boolean, default: true },
   createdBy: { type: String, required: true },
-  targetUsers: { type: [String], default: [] } // Array of user emails
+  targetUsers: { type: [String], default: [] }
 });
 
 // Coupon Banner Schema
@@ -280,22 +482,10 @@ const bannerSchema = new mongoose.Schema({
   subtitle: { type: String },
   imageUrl: { type: String, required: true },
   couponCode: { type: String },
-  targetUsers: { type: [String], default: [] }, // Empty array means all users
+  targetUsers: { type: [String], default: [] },
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
 });
-const Banner = mongoose.model('Banner', bannerSchema);
-// Add this with your other schema definitions
-const couponBannerSchema = new mongoose.Schema({
-  title: { type: String, required: true },
-  subtitle: { type: String },
-  imageUrl: { type: String, required: true },
-  couponCode: { type: String },
-  targetUsers: { type: [String], default: [] }, // Empty array means all users
-  isActive: { type: Boolean, default: true },
-  createdAt: { type: Date, default: Date.now }
-});
-
 
 // Email Template Schema
 const emailTemplateSchema = new mongoose.Schema({
@@ -314,67 +504,149 @@ const Gallery = mongoose.model('Gallery', gallerySchema);
 const Settings = mongoose.model('Settings', settingsSchema);
 const GmailSync = mongoose.model('GmailSync', gmailSyncSchema);
 const Coupon = mongoose.model('Coupon', couponSchema);
-const CouponBanner = mongoose.model('CouponBanner', couponBannerSchema);
+const CouponBanner = mongoose.model('CouponBanner', bannerSchema);
 const EmailTemplate = mongoose.model('EmailTemplate', emailTemplateSchema);
 
 // ==================== MIDDLEWARE ====================
 
+// FIX: Updated Rate Limiting with proper proxy support
+const authRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // limit each IP to 5 requests per windowMs
+  message: 'Too many authentication attempts, please try again later.',
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  keyGenerator: (req) => {
+    // Use the client's IP address, accounting for proxy
+    return req.ip || req.connection.remoteAddress;
+  }
+});
+
+const registerRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 3,
+  message: 'Too many registration attempts, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    return req.ip || req.connection.remoteAddress;
+  }
+});
+
+// Add this after the existing rate limiters
+const webauthnRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // limit each IP to 10 requests per windowMs
+  message: 'Too many WebAuthn attempts, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    return req.ip || req.connection.remoteAddress;
+  }
+});
+
+// Store failed login attempts and blacklisted IPs
+const failedAttempts = new Map();
+const BLACKLIST_THRESHOLD = 3;
+const blacklistedIPs = new Set();
+
+// Middleware to check IP blacklist
+const checkIPBlacklist = (req, res, next) => {
+  const clientIP = req.ip || req.connection.remoteAddress;
+  
+  if (blacklistedIPs.has(clientIP)) {
+    return res.status(403).json({ 
+      error: 'IP address blocked. Please contact administrator.' 
+    });
+  }
+  
+  next();
+};
+
+// Admin Authentication Middleware
 const authenticateAdmin = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: 'Authorization header missing' });
+    
+    // Check if authorization header exists
+    if (!authHeader) {
+      return res.status(401).json({ 
+        error: 'Authorization header missing',
+        code: 'NO_AUTH_HEADER'
+      });
+    }
+
+    // Check if it's a Bearer token
+    if (!authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ 
+        error: 'Invalid authorization format. Use Bearer <token>',
+        code: 'INVALID_AUTH_FORMAT'
+      });
+    }
 
     const token = authHeader.split(' ')[1];
-    if (!token) return res.status(401).json({ error: 'Token missing' });
+    
+    // Check if token exists
+    if (!token) {
+      return res.status(401).json({ 
+        error: 'Token missing',
+        code: 'TOKEN_MISSING'
+      });
+    }
 
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      
+      // Check if it's an admin
       if (decoded.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
+        return res.status(403).json({ 
+          error: 'Access denied. Admin role required.',
+          code: 'ACCESS_DENIED'
+        });
       }
-      req.admin = decoded;
+      
+      // Find the full admin document
+      const admin = await Admin.findOne({ email: decoded.email });
+      if (!admin) {
+        return res.status(401).json({ 
+          error: 'Admin account not found',
+          code: 'ADMIN_NOT_FOUND'
+        });
+      }
+      
+      req.admin = admin;
       return next();
+      
     } catch (tokenError) {
+      console.error('Token verification error:', tokenError);
+      
       if (tokenError.name === 'TokenExpiredError') {
-        const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
-        
-        if (!refreshToken) {
-          return res.status(401).json({ 
-            error: 'Token expired and no refresh token provided',
-            code: 'TOKEN_EXPIRED' 
-          });
-        }
-
-        try {
-          const refreshDecoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-          const admin = await Admin.findOne({ email: refreshDecoded.email });
-          
-          if (!admin) {
-            return res.status(401).json({ error: 'Invalid refresh token' });
-          }
-
-          const newToken = jwt.sign(
-            { email: admin.email, role: 'admin' },
-            process.env.JWT_SECRET,
-            { expiresIn: '1h' }
-          );
-
-          res.set('New-Access-Token', newToken);
-          req.admin = refreshDecoded;
-          return next();
-        } catch (refreshError) {
-          console.error('Refresh token error:', refreshError);
-          return res.status(401).json({ error: 'Invalid refresh token' });
-        }
+        return res.status(401).json({ 
+          error: 'Token expired',
+          code: 'TOKEN_EXPIRED'
+        });
       }
-      throw tokenError;
+      
+      if (tokenError.name === 'JsonWebTokenError') {
+        return res.status(401).json({ 
+          error: 'Invalid token',
+          code: 'INVALID_TOKEN'
+        });
+      }
+      
+      return res.status(401).json({ 
+        error: 'Authentication failed',
+        code: 'AUTH_FAILED',
+        details: tokenError.message
+      });
     }
   } catch (err) {
     console.error('Admin authentication error:', err);
-    if (err.name === 'JsonWebTokenError') {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-    res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'SERVER_ERROR',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
   }
 };
 
@@ -451,31 +723,234 @@ async function initializeAdmin() {
 
 // ==================== ROUTES ====================
 
-// Admin Login
-app.post('/api/admin/login', async (req, res) => {
+// Add this middleware before your routes
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  if (req.params && Object.keys(req.params).length > 0) {
+    console.log('Params:', req.params);
+  }
+  next();
+});
+
+// Admin Login (Fixed - No external API call)
+app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) => {
   try {
     const { email, password } = req.body;
     
+    if (!email || !password) {
+      return res.status(400).json({ 
+        error: 'Email and password are required',
+        details: {
+          email: !email,
+          password: !password
+        }
+      });
+    }
+    
+    // Find admin by email
     const admin = await Admin.findOne({ email });
     if (!admin) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      // Track failed attempt
+      const clientIP = req.ip || req.connection.remoteAddress;
+      const attempts = failedAttempts.get(clientIP) || 0;
+      failedAttempts.set(clientIP, attempts + 1);
+      
+      // Check if threshold reached
+      if (attempts + 1 >= BLACKLIST_THRESHOLD) {
+        blacklistedIPs.add(clientIP);
+        return res.status(401).json({ 
+          error: 'Unauthorized. IP has been blocked due to multiple failed attempts.' 
+        });
+      }
+      
+      return res.status(401).json({ 
+        error: 'Invalid credentials',
+        details: 'Admin not found'
+      });
     }
     
-    const isMatch = await bcrypt.compare(password, admin.password);
-    if (!isMatch) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+    // Verify password
+    const isPasswordValid = await bcrypt.compare(password, admin.password);
+    if (!isPasswordValid) {
+      // Track failed attempt
+      const clientIP = req.ip || req.connection.remoteAddress;
+      const attempts = failedAttempts.get(clientIP) || 0;
+      failedAttempts.set(clientIP, attempts + 1);
+      
+      // Check if threshold reached
+      if (attempts + 1 >= BLACKLIST_THRESHOLD) {
+        blacklistedIPs.add(clientIP);
+        return res.status(401).json({ 
+          error: 'Unauthorized. IP has been blocked due to multiple failed attempts.' 
+        });
+      }
+      
+      return res.status(401).json({ 
+        error: 'Invalid credentials',
+        details: 'Incorrect password'
+      });
     }
     
+    // Reset failed attempts for this IP
+    const clientIP = req.ip || req.connection.remoteAddress;
+    failedAttempts.delete(clientIP);
+    
+    // Check if admin has WebAuthn credentials
+    const hasWebAuthn = admin.webauthnCredentials.length > 0;
+    
+    // Generate JWT token
     const token = jwt.sign(
       { email: admin.email, role: 'admin' },
       process.env.JWT_SECRET,
       { expiresIn: '8h' }
     );
     
-    res.json({ success: true, token });
+    res.json({ 
+      success: true, 
+      token,
+      hasWebAuthn
+    });
   } catch (err) {
     console.error('Admin login error:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ 
+      error: 'Internal server error',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// Route to check if phone number is registered for admin
+app.post('/api/admin/check-phone', checkIPBlacklist, async (req, res) => {
+  try {
+    const { phoneNumber } = req.body;
+    
+    if (!phoneNumber) {
+      return res.status(400).json({ error: 'Phone number is required' });
+    }
+    
+    // Get admin phones from environment variable
+    const adminPhones = process.env.FIREBASE_ADMIN_PHONES 
+      ? process.env.FIREBASE_ADMIN_PHONES.split(',') 
+      : [];
+    
+    // Check if phone is in admin list
+    if (!adminPhones.includes(phoneNumber)) {
+      // Track failed attempt
+      const clientIP = req.ip || req.connection.remoteAddress;
+      const attempts = failedAttempts.get(clientIP) || 0;
+      failedAttempts.set(clientIP, attempts + 1);
+      
+      // Check if threshold reached
+      if (attempts + 1 >= BLACKLIST_THRESHOLD) {
+        blacklistedIPs.add(clientIP);
+        return res.status(401).json({ 
+          error: 'Unauthorized. IP has been blocked due to multiple failed attempts.' 
+        });
+      }
+      
+      return res.status(401).json({ 
+        error: `Unauthorized phone number. ${BLACKLIST_THRESHOLD - attempts - 1} attempts remaining.` 
+      });
+    }
+    
+    // Reset failed attempts for this IP
+    const clientIP = req.ip || req.connection.remoteAddress;
+    failedAttempts.delete(clientIP);
+    
+    res.json({ 
+      success: true, 
+      message: 'Phone number verified. OTP sent.' 
+    });
+  } catch (err) {
+    console.error('Error checking phone:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Route to verify OTP for admin login
+app.post('/api/admin/verify-otp', checkIPBlacklist, async (req, res) => {
+    try {
+        const { idToken, email } = req.body;
+        
+        if (!idToken) {
+            return res.status(400).json({ error: 'ID token is required' });
+        }
+        
+        // Verify the Firebase ID token
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        
+        // Check if the phone number is in the admin list
+        const phoneNumber = decodedToken.phone_number;
+        const adminPhones = process.env.FIREBASE_ADMIN_PHONES 
+            ? process.env.FIREBASE_ADMIN_PHONES.split(',') 
+            : [];
+        
+        if (!adminPhones.includes(phoneNumber)) {
+            return res.status(401).json({ error: 'Unauthorized phone number' });
+        }
+        
+        // Verify admin credentials (email/password) first
+        try {
+            // This simulates checking against your admin database
+            // Replace with your actual admin verification logic
+            const adminUser = await Admin.findOne({ email });
+            if (!adminUser) {
+                return res.status(401).json({ error: 'Invalid admin credentials' });
+            }
+            
+            // Generate JWT token for admin access
+            const token = jwt.sign(
+                { 
+                    email: adminUser.email, 
+                    role: 'admin',
+                    uid: decodedToken.uid 
+                },
+                process.env.JWT_SECRET,
+                { expiresIn: '8h' }
+            );
+            
+            res.json({ 
+                success: true, 
+                token,
+                message: 'OTP verified successfully' 
+            });
+        } catch (error) {
+            res.status(401).json({ error: 'Invalid admin credentials' });
+        }
+        
+    } catch (err) {
+        console.error('Error verifying OTP:', err);
+        res.status(401).json({ error: 'Invalid OTP' });
+    }
+});
+
+// Route to unblock IP (for other admins)
+app.post('/api/admin/unblock-ip', authenticateAdmin, async (req, res) => {
+  try {
+    const { ipAddress } = req.body;
+    
+    if (blacklistedIPs.has(ipAddress)) {
+      blacklistedIPs.delete(ipAddress);
+      failedAttempts.delete(ipAddress);
+    }
+    
+    res.json({ success: true, message: 'IP unblocked successfully' });
+  } catch (err) {
+    console.error('Error unblocking IP:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Route to get blocked IPs
+app.get('/api/admin/blocked-ips', authenticateAdmin, async (req, res) => {
+  try {
+    res.json({ 
+      success: true, 
+      blockedIPs: Array.from(blacklistedIPs) 
+    });
+  } catch (err) {
+    console.error('Error getting blocked IPs:', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
@@ -510,61 +985,937 @@ app.post('/api/admin/refresh-token', async (req, res) => {
   }
 });
 
-// PUT /api/admin/bookings/:id - Update booking details
-app.put('/api/admin/bookings/:id', authenticateAdmin, async (req, res) => {
+// ===== WEB AUTHN ROUTES ===== //
+
+// Add this before your WebAuthn routes
+app.options('/api/admin/webauthn/*', (req, res) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin || 'https://jokercreation.store');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie, credentials');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Max-Age', '86400');
+  res.sendStatus(204);
+});
+
+// Validate if a string is valid base64url format
+function isValidBase64url(str) {
+  if (typeof str !== 'string') return false;
+  
+  // Base64url regex pattern (no padding required)
+  const base64urlPattern = /^[A-Za-z0-9_-]+$/;
+  
+  // Check if it matches the pattern
+  return base64urlPattern.test(str);
+}
+
+// WebAuthn Registration Options
+app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin, webauthnRateLimit, async (req, res) => {
   try {
-    const { id } = req.params;
-    const updates = req.body;
+    console.log('WebAuthn registration request received');
     
-    // Validate input
-    if (!updates || typeof updates !== 'object') {
-      return res.status(400).json({ message: 'Invalid update data' });
+    if (!req.admin) {
+      return res.status(401).json({ 
+        error: 'Authentication required',
+        code: 'AUTH_REQUIRED'
+      });
     }
 
-    // Allowed fields to update
-    const allowedUpdates = {
-      customerName: true,
-      customerEmail: true,
-      customerPhone: true,
-      package: true,
-      bookingDates: true,
-      preWeddingDate: true,
-      address: true,
-      status: true,
-      paymentStatus: true,
-      paymentBreakdown: true,
-      notes: true
+    const admin = req.admin;
+    console.log('Admin found:', admin.email);
+
+    // Convert the admin ID to Uint8Array for the userID
+    const adminIdString = admin._id.toString();
+    const userID = new TextEncoder().encode(adminIdString);
+
+    // Properly format excludeCredentials
+    const excludeCredentials = admin.webauthnCredentials.map(cred => ({
+      id: Buffer.from(cred.credentialID, 'base64'),
+      type: 'public-key'
+    }));
+
+    // Generate registration options
+    const options = await generateRegistrationOptions({
+      rpName: 'Joker Creation Admin Panel',
+      rpID,
+      userID,
+      userName: admin.email,
+      excludeCredentials,
+      authenticatorSelection: {
+        authenticatorAttachment: 'platform',
+        userVerification: 'required'
+      }
+    });
+
+    // Store the challenge as Uint8Array in session
+    req.session.webauthnChallenge = options.challenge;
+    req.session.webauthnEmail = admin.email;
+    req.session.webauthnTimestamp = Date.now();
+
+    // Ensure session is saved
+    await new Promise((resolve, reject) => {
+      req.session.save((err) => {
+        if (err) {
+          console.error('Failed to save session:', err);
+          reject(err);
+        } else {
+          console.log('Session saved successfully');
+          resolve();
+        }
+      });
+    });
+
+    // Convert challenge to base64url for client
+    const responseOptions = {
+      ...options,
+      challenge: uint8ArrayToBase64url(options.challenge),
+      user: {
+        id: uint8ArrayToBase64url(options.user.id),
+        name: options.user.name,
+        displayName: options.user.displayName
+      },
+      excludeCredentials: options.excludeCredentials.map(cred => ({
+        id: uint8ArrayToBase64url(cred.id),
+        type: cred.type
+      }))
     };
 
-    // Filter updates to only allowed fields
-    const filteredUpdates = {};
-    for (const key in updates) {
-      if (allowedUpdates[key]) {
-        filteredUpdates[key] = updates[key];
+    res.json({
+      ...responseOptions,
+      sessionId: req.sessionID
+    });
+    
+  } catch (err) {
+    console.error('Error generating registration options:', err);
+    res.status(500).json({ 
+      error: 'Failed to generate registration options',
+      code: 'GENERATION_FAILED',
+      details: err.message 
+    });
+  }
+});
+
+app.get('/api/debug/cookies', (req, res) => {
+  res.json({
+    cookies: req.headers.cookie,
+    sessionId: req.sessionID,
+    session: req.session,
+    headers: req.headers
+  });
+});
+
+app.get('/api/debug/session-info', authenticateAdmin, async (req, res) => {
+  try {
+    const sessionInfo = {
+      sessionId: req.sessionID,
+      session: req.session,
+      sessionKeys: Object.keys(req.session),
+      hasChallenge: !!req.session.webauthnChallenge,
+      challenge: req.session.webauthnChallenge,
+      hasEmail: !!req.session.webauthnEmail,
+      email: req.session.webauthnEmail,
+      cookie: req.headers.cookie
+    };
+    
+    res.json(sessionInfo);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Generate authentication options
+app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimit, async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ 
+        error: 'Email is required',
+        code: 'EMAIL_REQUIRED'
+      });
+    }
+
+    const admin = await Admin.findOne({ email });
+    if (!admin) {
+      return res.status(404).json({ 
+        error: 'Admin not found',
+        code: 'ADMIN_NOT_FOUND'
+      });
+    }
+
+    // Properly format allowCredentials
+    const allowCredentials = admin.webauthnCredentials.map(cred => ({
+      id: Buffer.from(cred.credentialID, 'base64'),
+      type: 'public-key'
+    }));
+
+    // Generate authentication options
+    const options = await generateAuthenticationOptions({
+      rpID,
+      allowCredentials,
+      userVerification: 'required'
+    });
+
+    // Store the challenge and email in the session
+    req.session.webauthnChallenge = options.challenge;
+    req.session.webauthnEmail = email;
+
+    // Ensure session is saved
+    await new Promise((resolve, reject) => {
+      req.session.save((err) => {
+        if (err) {
+          console.error('Failed to save session:', err);
+          reject(err);
+        } else {
+          console.log('Auth session saved successfully');
+          resolve();
+        }
+      });
+    });
+
+    // Convert challenge to base64url for client
+    res.json({
+      ...options,
+      challenge: uint8ArrayToBase64url(options.challenge)
+    });
+  } catch (err) {
+    console.error('Error generating authentication options:', err);
+    res.status(500).json({ 
+      error: 'Failed to generate authentication options',
+      code: 'AUTH_OPTIONS_FAILED',
+      details: err.message 
+    });
+  }
+});
+
+app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (req, res) => {
+  try {
+    const { credential, email } = req.body;
+    const expectedChallenge = req.session.webauthnChallenge;
+    const sessionEmail = req.session.webauthnEmail;
+
+    if (!expectedChallenge || !sessionEmail) {
+      return res.status(400).json({ error: 'Missing challenge or email in session' });
+    }
+
+    if (email !== sessionEmail) {
+      return res.status(400).json({ error: 'Email mismatch' });
+    }
+
+    const admin = await Admin.findOne({ email });
+    if (!admin) {
+      return res.status(404).json({ error: 'Admin not found' });
+    }
+
+    // Find the credential that was used
+    const credInfo = admin.webauthnCredentials.find(
+      cred => cred.credentialID === credential.id
+    );
+
+    if (!credInfo) {
+      return res.status(400).json({ error: 'Credential not found' });
+    }
+
+    // Validate credential ID format
+    function isValidBase64url(str) {
+      return /^[A-Za-z0-9_-]+$/.test(str);
+    }
+
+    if (!isValidBase64url(credential.id)) {
+      return res.status(400).json({
+        error: 'Invalid credential ID format',
+        details: 'Credential ID must be a valid base64url string',
+      });
+    }
+
+    // Prepare response object for @simplewebauthn/server
+    const response = {
+      id: credential.id,
+      rawId: base64urlToBuffer(credential.rawId || credential.id),
+      response: {
+        clientDataJSON: base64urlToBuffer(credential.response.clientDataJSON),
+        authenticatorData: base64urlToBuffer(credential.response.authenticatorData),
+        signature: base64urlToBuffer(credential.response.signature),
+        userHandle: credential.response.userHandle
+          ? base64urlToBuffer(credential.response.userHandle)
+          : undefined,
+      },
+      type: credential.type || 'public-key',
+      clientExtensionResults: credential.clientExtensionResults || {},
+    };
+
+    const verification = await verifyAuthenticationResponse({
+      response,
+      expectedChallenge: Buffer.from(expectedChallenge, 'base64'),
+      expectedOrigin: `https://${rpID}`,
+      expectedRPID: rpID,
+      requireUserVerification: true,
+      authenticator: {
+        credentialPublicKey: Buffer.from(credInfo.credentialPublicKey, 'base64'),
+        credentialID: Buffer.from(credInfo.credentialID, 'base64'),
+        counter: credInfo.counter,
+      },
+    });
+
+    if (!verification.verified) {
+      return res.status(400).json({ error: 'Authentication verification failed' });
+    }
+
+    // Update the counter for the credential
+    await Admin.updateOne(
+      { _id: admin._id, 'webauthnCredentials.credentialID': credential.id },
+      { $set: { 'webauthnCredentials.$.counter': verification.authenticationInfo.newCounter } }
+    );
+
+    // Generate token
+    const token = jwt.sign(
+      { email: admin.email, role: 'admin' },
+      process.env.JWT_SECRET,
+      { expiresIn: '8h' }
+    );
+
+    // Clear session data
+    req.session.webauthnChallenge = null;
+    req.session.webauthnEmail = null;
+    await req.session.save();
+
+    res.json({
+      success: true,
+      token,
+      message: 'Authentication successful',
+    });
+
+  } catch (err) {
+    console.error('Error verifying authentication:', err);
+    res.status(500).json({ error: 'Failed to verify authentication' });
+  }
+});
+
+// Add this temporary route to test SimpleWebAuthn
+app.get('/test-simplewebauthn', async (req, res) => {
+  try {
+    console.log('Testing SimpleWebAuthn functions...');
+    
+    // Test generateRegistrationOptions with minimal required parameters
+    const testUserID = new TextEncoder().encode('test-user-id-12345');
+    
+    console.log('Test userID:', testUserID);
+    
+    const regOptions = await generateRegistrationOptions({
+      rpName: 'Test RP',
+      rpID: rpID,
+      userID: testUserID,
+      userName: 'test@example.com',
+      excludeCredentials: []
+    });
+    
+    console.log('Registration options generated:', {
+      challenge: regOptions?.challenge,
+      challengeType: typeof regOptions?.challenge,
+      challengeLength: regOptions?.challenge?.length,
+      user: regOptions?.user,
+      userId: regOptions?.user?.id,
+      userIdType: typeof regOptions?.user?.id,
+      userIdLength: regOptions?.user?.id?.length,
+      excludeCredentials: regOptions?.excludeCredentials
+    });
+    
+    // Test generateAuthenticationOptions
+    const authOptions = await generateAuthenticationOptions({
+      rpID,
+      allowCredentials: [],
+      userVerification: 'required'
+    });
+    
+    console.log('Authentication options generated:', {
+      challenge: authOptions?.challenge,
+      challengeType: typeof authOptions?.challenge,
+      challengeLength: authOptions?.challenge?.length,
+      allowCredentials: authOptions?.allowCredentials
+    });
+    
+    // Test helper function with Uint8Array
+    const testArray = new Uint8Array([1, 2, 3, 4]);
+    const encodedFromUint8Array = uint8ArrayToBase64url(testArray);
+    
+    // Test helper function with string (should return as-is)
+    const testString = "AQIDBA";
+    const encodedFromString = uint8ArrayToBase64url(testString);
+    
+    res.json({
+      success: true,
+      simpleWebAuthn: {
+        registrationOptions: {
+          challenge: regOptions?.challenge ? 'present' : 'missing',
+          challengeType: typeof regOptions?.challenge,
+          challengeLength: regOptions?.challenge?.length,
+          user: {
+            id: regOptions?.user?.id ? 'present' : 'missing',
+            idType: typeof regOptions?.user?.id,
+            idLength: regOptions?.user?.id?.length
+          }
+        },
+        authenticationOptions: {
+          challenge: authOptions?.challenge ? 'present' : 'missing',
+          challengeType: typeof authOptions?.challenge,
+          challengeLength: authOptions?.challenge?.length
+        }
+      },
+      testEncoding: {
+        uint8ArrayInput: Array.from(testArray),
+        uint8ArrayOutput: encodedFromUint8Array,
+        stringInput: testString,
+        stringOutput: encodedFromString
+      },
+      rpID: rpID
+    });
+  } catch (err) {
+    console.error('SimpleWebAuthn test failed:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      stack: err.stack
+    });
+  }
+});
+
+// Verify registration
+app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnRateLimit, async (req, res) => {
+  try {
+    const { credential, deviceName, sessionId } = req.body;
+    
+    console.log('=== WEB AUTHN VERIFICATION STARTED ===');
+    console.log('Credential ID received:', credential?.id);
+    console.log('Credential type:', typeof credential?.id);
+
+    // ===== INPUT VALIDATION ===== //
+    if (!credential || !credential.id) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Credential data is required',
+        code: 'MISSING_CREDENTIAL',
+        details: 'Both credential object and credential ID are required'
+      });
+    }
+
+    if (!deviceName || typeof deviceName !== 'string' || deviceName.trim().length === 0) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Device name is required',
+        code: 'MISSING_DEVICE_NAME',
+        details: 'Please provide a valid device name'
+      });
+    }
+
+    // ===== SESSION VALIDATION ===== //
+    let expectedChallenge = req.session.webauthnChallenge;
+    let adminEmail = req.session.webauthnEmail;
+
+    console.log('Session check - Challenge exists:', !!expectedChallenge, 'Email exists:', !!adminEmail);
+
+    // Session restoration logic
+    if (!expectedChallenge && sessionId) {
+      console.log('Attempting to restore session from store...');
+      
+      try {
+        const sessionData = await new Promise((resolve, reject) => {
+          req.sessionStore.get(sessionId, (err, session) => {
+            if (err) {
+              console.error('Session store error:', err);
+              reject(err);
+            } else {
+              resolve(session);
+            }
+          });
+        });
+        
+        if (sessionData && sessionData.webauthnChallenge && sessionData.webauthnEmail) {
+          console.log('Session restored successfully');
+          expectedChallenge = sessionData.webauthnChallenge;
+          adminEmail = sessionData.webauthnEmail;
+          
+          // Restore session data to current session
+          req.session.webauthnChallenge = sessionData.webauthnChallenge;
+          req.session.webauthnEmail = sessionData.webauthnEmail;
+          req.session.webauthnTimestamp = sessionData.webauthnTimestamp || Date.now();
+          
+          await new Promise((resolve, reject) => {
+            req.session.save((err) => {
+              if (err) {
+                console.error('Failed to save restored session:', err);
+                reject(err);
+              } else {
+                console.log('Restored session saved successfully');
+                resolve();
+              }
+            });
+          });
+        } else {
+          throw new Error('Invalid session data in store');
+        }
+      } catch (restoreError) {
+        console.error('Session restoration failed:', restoreError);
+        return res.status(400).json({ 
+          success: false,
+          error: 'Session expired or invalid',
+          code: 'SESSION_RESTORE_FAILED',
+          details: 'Please refresh the page and try again'
+        });
       }
     }
 
-    // Add audit info
-    filteredUpdates.updatedAt = new Date();
-    filteredUpdates.updatedBy = req.admin._id; // Assuming you have admin info in req
+    // Validate session data
+    if (!expectedChallenge || !adminEmail) {
+      console.error('Missing session data:', { 
+        hasChallenge: !!expectedChallenge, 
+        hasEmail: !!adminEmail 
+      });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Authentication session expired',
+        code: 'SESSION_EXPIRED',
+        details: 'Please start the registration process again'
+      });
+    }
 
-    const booking = await Booking.findByIdAndUpdate(
-      id,
-      { $set: filteredUpdates },
-      { new: true, runValidators: true }
-    );
+    console.log('Session validation passed');
+    console.log('Expected challenge (base64url):', expectedChallenge?.substring(0, 20) + '...');
 
-    if (!booking) {
-      return res.status(404).json({ message: 'Booking not found' });
+    // ===== ADMIN VALIDATION ===== //
+    const admin = await Admin.findOne({ email: adminEmail });
+    if (!admin) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Admin not found',
+        code: 'ADMIN_NOT_FOUND',
+        details: 'No admin account found for the provided email'
+      });
+    }
+
+    console.log('Admin found:', admin.email);
+
+    // ===== DATA CONVERSION ===== //
+     console.log('Converting credential data to proper formats...');
+  
+  let credentialIdBuffer;
+  let credentialIdString;
+  
+  try {
+    console.log('Processing credential ID...');
+    console.log('Credential ID from request:', req.body.credential.id);
+    console.log('Raw ID from request:', req.body.credential.rawId);
+
+      // The credential.id from the browser is already a base64url string
+      if (req.body.credential.id && typeof req.body.credential.id === 'string') {
+        console.log('Using credential.id as base64url string');
+        credentialIdString = req.body.credential.id;
+        
+        // Convert to buffer for verification
+        credentialIdBuffer = base64urlToBuffer(credentialIdString);
+      } 
+      // Fallback to rawId if needed
+      else if (req.body.credential.rawId && typeof req.body.credential.rawId === 'string') {
+        console.log('Using credential.rawId as base64url string');
+        credentialIdString = req.body.credential.rawId;
+        credentialIdBuffer = base64urlToBuffer(credentialIdString);
+      }
+      // Handle ArrayBuffer (shouldn't happen with our frontend changes, but just in case)
+      else if (req.body.credential.rawId && (req.body.credential.rawId instanceof ArrayBuffer || req.body.credential.rawId instanceof Uint8Array)) {
+        console.log('Converting rawId ArrayBuffer to base64url');
+        const uint8Array = req.body.credential.rawId instanceof Uint8Array ? 
+          req.body.credential.rawId : new Uint8Array(req.body.credential.rawId);
+        credentialIdBuffer = uint8Array;
+        credentialIdString = bufferToBase64url(uint8Array);
+      }
+      else {
+        throw new Error('Invalid credential ID format');
+      }
+
+      console.log('Final credential ID string:', credentialIdString);
+      console.log('Final credential ID buffer length:', credentialIdBuffer.length);
+
+      // Validate credential ID format
+      if (!isValidBase64url(credentialIdString)) {
+        console.error('Credential ID failed base64url validation:', credentialIdString);
+        throw new Error('Credential ID is not properly base64url encoded');
+      }
+
+      // Validate buffer length (typical credential ID is 16-32 bytes)
+      if (credentialIdBuffer.length < 16 || credentialIdBuffer.length > 1024) {
+        console.error('Credential ID has invalid length:', credentialIdBuffer.length);
+        throw new Error('Credential ID has invalid length');
+      }
+
+      console.log('Credential ID validation passed');
+    } catch (conversionError) {
+      console.error('Credential ID conversion error:', conversionError);
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid credential ID format',
+        code: 'INVALID_CREDENTIAL_ID',
+        details: conversionError.message
+      });
+    }
+
+    // Convert response data with enhanced error handling
+    try {
+      console.log('Converting response data...');
+      
+      if (!req.body.credential.response || !req.body.credential.response.clientDataJSON || !req.body.credential.response.attestationObject) {
+        throw new Error('Missing required response fields');
+      }
+
+      // Extract the base64url strings from the credential response
+      let clientDataJSONString, attestationObjectString;
+
+      // Handle clientDataJSON - it should be a base64url string
+      if (typeof req.body.credential.response.clientDataJSON === 'string') {
+        clientDataJSONString = req.body.credential.response.clientDataJSON;
+      } else if (req.body.credential.response.clientDataJSON instanceof ArrayBuffer || 
+                 req.body.credential.response.clientDataJSON instanceof Buffer) {
+        // If it's already a buffer, convert to base64url string first
+        clientDataJSONString = bufferToBase64url(req.body.credential.response.clientDataJSON);
+      } else {
+        throw new Error('Invalid clientDataJSON format');
+      }
+
+      // Handle attestationObject - it should be a base64url string
+      if (typeof req.body.credential.response.attestationObject === 'string') {
+        attestationObjectString = req.body.credential.response.attestationObject;
+      } else if (req.body.credential.response.attestationObject instanceof ArrayBuffer || 
+                 req.body.credential.response.attestationObject instanceof Buffer) {
+        // If it's already a buffer, convert to base64url string first
+        attestationObjectString = bufferToBase64url(req.body.credential.response.attestationObject);
+      } else {
+        throw new Error('Invalid attestationObject format');
+      }
+
+      console.log('Client data string (first 20 chars):', clientDataJSONString?.substring(0, 20) + '...');
+      console.log('Attestation object string (first 20 chars):', attestationObjectString?.substring(0, 20) + '...');
+
+      // Convert the strings to buffers
+      const clientDataJSONBuffer = base64urlToBuffer(clientDataJSONString);
+      const attestationObjectBuffer = base64urlToBuffer(attestationObjectString);
+
+      console.log('Client data length:', clientDataJSONBuffer.length);
+      console.log('Attestation object length:', attestationObjectBuffer.length);
+
+      // Validate buffer lengths
+      if (clientDataJSONBuffer.length < 32 || clientDataJSONBuffer.length > 2048) {
+        throw new Error('Client data has invalid length');
+      }
+
+      if (attestationObjectBuffer.length < 32 || attestationObjectBuffer.length > 4096) {
+        throw new Error('Attestation object has invalid length');
+      }
+
+      // Convert expected challenge
+      const expectedChallengeBuffer = base64urlToBuffer(expectedChallenge);
+      console.log('Expected challenge converted to buffer, length:', expectedChallengeBuffer.length);
+
+      // Prepare the response object for verification
+      const response = {
+        id: credentialIdString,
+        rawId: credentialIdBuffer,
+        response: {
+          clientDataJSON: clientDataJSONBuffer,
+          attestationObject: attestationObjectBuffer
+        },
+        type: req.body.credential.type || 'public-key',
+        clientExtensionResults: req.body.credential.clientExtensionResults || {}
+      };
+
+      console.log('Credential data conversion completed');
+
+      // ===== VERIFICATION ===== //
+      console.log('Starting registration verification...');
+      
+      const verification = await verifyRegistrationResponse({
+        response,
+        expectedChallenge: expectedChallengeBuffer,
+        expectedOrigin: `https://${rpID}`,
+        expectedRPID: rpID,
+        requireUserVerification: true
+      });
+
+      console.log('Verification completed:', {
+        verified: verification.verified,
+        hasRegistrationInfo: !!verification.registrationInfo,
+        verificationError: verification.verificationError?.message
+      });
+
+      if (!verification.verified || !verification.registrationInfo) {
+        console.error('Verification failed:', verification);
+        return res.status(400).json({ 
+          success: false,
+          error: 'Registration verification failed',
+          code: 'VERIFICATION_FAILED',
+          details: verification.verificationError?.message || 'Unknown verification error'
+        });
+      }
+
+      // ===== CREDENTIAL STORAGE ===== //
+      const { credentialPublicKey, credentialID, counter } = verification.registrationInfo;
+      
+      console.log('Extracted credential info:', {
+        credentialIDLength: credentialID.length,
+        publicKeyLength: credentialPublicKey.length,
+        counter: counter
+      });
+
+      // Validate extracted data
+      if (!credentialPublicKey || !credentialID || typeof counter !== 'number') {
+        throw new Error('Invalid registration info extracted');
+      }
+
+      // Convert binary data to base64 for storage
+      const credentialIDBase64 = bufferToBase64url(credentialID);
+      const credentialPublicKeyBase64 = bufferToBase64url(credentialPublicKey);
+
+      // Check for duplicate credentials
+      const existingCredential = admin.webauthnCredentials.find(
+        cred => cred.credentialID === credentialIDBase64
+      );
+
+      if (existingCredential) {
+        console.error('Credential already exists:', credentialIDBase64);
+        return res.status(400).json({ 
+          success: false,
+          error: 'This security key is already registered',
+          code: 'CREDENTIAL_EXISTS',
+          details: 'This authenticator has already been registered to this account'
+        });
+      }
+
+      // Add new credential
+      const newCredential = {
+        credentialID: credentialIDBase64,
+        credentialPublicKey: credentialPublicKeyBase64,
+        counter: counter,
+        deviceType: 'platform',
+        deviceName: deviceName.trim(),
+        addedAt: new Date()
+      };
+
+      admin.webauthnCredentials.push(newCredential);
+
+      await admin.save();
+      console.log('Credential saved successfully to database');
+
+      // ===== CLEANUP ===== //
+      req.session.webauthnChallenge = null;
+      req.session.webauthnEmail = null;
+      
+      await new Promise((resolve, reject) => {
+        req.session.save((err) => {
+          if (err) {
+            console.error('Failed to clear session:', err);
+            reject(err);
+          } else {
+            console.log('Session cleared successfully');
+            resolve();
+          }
+        });
+      });
+
+      // ===== SUCCESS RESPONSE ===== //
+      console.log('=== WEB AUTHN REGISTRATION COMPLETED SUCCESSFULLY ===');
+      
+      res.json({ 
+        success: true,
+        message: 'Security key registered successfully',
+        credential: {
+          deviceName: newCredential.deviceName,
+          deviceType: newCredential.deviceType,
+          addedAt: newCredential.addedAt.toISOString()
+        }
+      });
+
+    } catch (verificationError) {
+      console.error('Verification process error:', verificationError);
+      return res.status(400).json({ 
+        success: false,
+        error: 'Verification process failed',
+        code: 'VERIFICATION_PROCESS_ERROR',
+        details: verificationError.message
+      });
+    }
+
+  } catch (err) {
+    console.error('❌ CRITICAL ERROR in verification:', err);
+    
+    // Determine appropriate error code
+    let errorCode = 'VERIFICATION_ERROR';
+    let statusCode = 500;
+    
+    if (err.message.includes('Invalid session') || err.message.includes('expired')) {
+      errorCode = 'SESSION_ERROR';
+      statusCode = 400;
+    } else if (err.message.includes('credential') || err.message.includes('format')) {
+      errorCode = 'CREDENTIAL_FORMAT_ERROR';
+      statusCode = 400;
+    } else if (err.message.includes('not found')) {
+      errorCode = 'ADMIN_NOT_FOUND';
+      statusCode = 404;
+    }
+    
+    res.status(statusCode).json({ 
+      success: false,
+      error: 'Failed to verify registration',
+      code: errorCode,
+      details: process.env.NODE_ENV === 'development' ? err.message : 'An unexpected error occurred'
+    });
+  }
+});
+
+// Get admin's WebAuthn credentials
+app.get('/api/admin/webauthn/credentials', authenticateAdmin, async (req, res) => {
+  try {
+    const admin = req.admin; // Now contains the full admin document
+    if (!admin) {
+      return res.status(404).json({ error: 'Admin not found' });
     }
 
     res.json({
-      message: 'Booking updated successfully',
-      booking
+      success: true,
+      credentials: admin.webauthnCredentials.map(cred => ({
+        id: cred._id,
+        deviceName: cred.deviceName,
+        deviceType: cred.deviceType,
+        addedAt: cred.addedAt
+      }))
     });
-  } catch (error) {
-    console.error('Error updating booking:', error);
-    res.status(500).json({ message: 'Error updating booking', error: error.message });
+  } catch (err) {
+    console.error('Error fetching credentials:', err);
+    res.status(500).json({ error: 'Failed to fetch credentials' });
+  }
+});
+
+// Delete a WebAuthn credential
+app.delete('/api/admin/webauthn/credentials/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const admin = req.admin; // Now contains the full admin document
+    if (!admin) {
+      return res.status(404).json({ error: 'Admin not found' });
+    }
+
+    // Remove the credential
+    admin.webauthnCredentials = admin.webauthnCredentials.filter(
+      cred => cred._id.toString() !== req.params.id
+    );
+
+    await admin.save();
+
+    res.json({ success: true, message: 'Credential deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting credential:', err);
+    res.status(500).json({ error: 'Failed to delete credential' });
+  }
+});
+
+app.get('/check-versions', (req, res) => {
+  const packageJson = require('./package.json');
+  res.json({
+    simpleWebAuthnServer: packageJson.dependencies['@simplewebauthn/server'],
+    nodeVersion: process.version,
+    allDependencies: packageJson.dependencies
+  });
+});
+
+app.post('/api/admin/webauthn/debug-credential', authenticateAdmin, (req, res) => {
+  try {
+    const { credential } = req.body;
+    
+    res.json({
+      success: true,
+      credential: {
+        hasId: !!credential.id,
+        id: credential.id,
+        hasRawId: !!credential.rawId,
+        rawIdType: typeof credential.rawId,
+        rawIdLength: credential.rawId?.length,
+        hasResponse: !!credential.response,
+        responseKeys: Object.keys(credential.response || {}),
+        hasClientDataJSON: !!credential.response?.clientDataJSON,
+        hasAttestationObject: !!credential.response?.attestationObject,
+        type: credential.type
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add this endpoint to test if sessions are working correctly
+app.get('/api/admin/test-session', authenticateAdmin, async (req, res) => {
+  try {
+    // Set a test value in the session
+    req.session.testValue = 'Session is working';
+    req.session.testTimestamp = Date.now();
+    
+    // Save the session
+    await new Promise((resolve, reject) => {
+      req.session.save((err) => {
+        if (err) {
+          console.error('Failed to save session:', err);
+          reject(err);
+        } else {
+          console.log('Session saved successfully');
+          resolve();
+        }
+      });
+    });
+    
+    res.json({
+      success: true,
+      message: 'Session test completed',
+      sessionId: req.sessionID,
+      testValue: req.session.testValue,
+      testTimestamp: req.session.testTimestamp,
+      cookie: req.headers.cookie
+    });
+  } catch (err) {
+    console.error('Session test error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Session test failed',
+      details: err.message
+    });
+  }
+});
+
+app.post('/api/admin/webauthn/debug-base64url', authenticateAdmin, (req, res) => {
+  try {
+    const { base64urlString } = req.body;
+    
+    console.log('Debug base64url conversion for:', base64urlString);
+    
+    // Test validation
+    const isValid = isValidBase64url(base64urlString);
+    console.log('Is valid base64url:', isValid);
+    
+    // Test conversion
+    const buffer = base64urlToBuffer(base64urlString);
+    console.log('Converted to buffer, length:', buffer.length);
+    
+    // Test reverse conversion
+    const convertedBack = bufferToBase64url(buffer);
+    console.log('Converted back to base64url:', convertedBack);
+    console.log('Matches original:', base64urlString === convertedBack);
+    
+    res.json({
+      success: true,
+      original: base64urlString,
+      isValid,
+      bufferLength: buffer.length,
+      convertedBack,
+      matches: base64urlString === convertedBack
+    });
+  } catch (err) {
+    console.error('Debug base64url error:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
   }
 });
 
@@ -607,26 +1958,7 @@ app.delete('/api/admin/coupons/:id', authenticateAdmin, async (req, res) => {
   }
 });
 
-// Coupon Banner Routes
-app.post('/api/admin/coupon-banners', authenticateAdmin, upload.single('bannerImage'), async (req, res) => {
-  try {
-    const bannerData = {
-      ...req.body,
-      imageUrl: `/uploads/${req.file.filename}`,
-      targetUsers: req.body.targetUsers ? JSON.parse(req.body.targetUsers) : []
-    };
-    const banner = new CouponBanner(bannerData);
-    await banner.save();
-    
-    await sendCouponBannerEmails(banner);
-    
-    res.json({ success: true, banner });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
 // Coupon Validation Endpoint
-// On your backend server (Node.js/Express)
 app.post('/api/coupons/validate', async (req, res) => {
   try {
     const { code } = req.body;
@@ -680,6 +2012,7 @@ app.post('/api/coupons/validate', async (req, res) => {
     });
   }
 });
+
 // Add to your server routes
 app.get('/api/coupons/debug/:code', async (req, res) => {
   const coupon = await Coupon.findOne({ code: req.params.code });
@@ -938,8 +2271,6 @@ couponSchema.pre('save', function(next) {
   next();
 });
 
-const cron = require('node-cron');
-
 // Run every day at midnight
 cron.schedule('0 0 * * *', async () => {
   try {
@@ -968,11 +2299,7 @@ cron.schedule('0 0 * * *', async () => {
   }
 });
 
-
-// In your backend code (Node.js/Express)
-
 // Get coupon usage details
-// Add this with your other routes
 app.get('/api/admin/coupons/:id/usage', authenticateAdmin, async (req, res) => {
   try {
     const couponId = req.params.id;
@@ -1179,52 +2506,262 @@ app.get('/api/admin/bookings/stats', authenticateAdmin, async (req, res) => {
   }
 });
 
+app.put('/api/admin/bookings/:id', authenticateAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const updates = req.body;
+        
+        console.log('=== UPDATE BOOKING DEBUG ===');
+        console.log('Request params:', req.params);
+        console.log('ID parameter:', id);
+        
+        // Validate ID parameter
+        if (!id || id === "undefined" || id === undefined || id === null || id === "") {
+            console.error('❌ Invalid booking ID received:', id);
+            return res.status(400).json({ 
+                success: false,
+                message: 'Invalid booking ID',
+                details: 'The booking ID is missing or invalid'
+            });
+        }
+        
+        // Check if it's a valid MongoDB ObjectId
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            console.error('❌ Invalid MongoDB ObjectId format:', id);
+            return res.status(400).json({ 
+                success: false,
+                message: 'Invalid booking ID format',
+                details: 'The booking ID must be a valid MongoDB ObjectId (24 hex characters)'
+            });
+        }
+        
+        console.log('✅ ID validation passed, proceeding with update...');
+        
+        // Allowed fields to update
+        const allowedUpdates = {
+            customerName: true,
+            customerEmail: true,
+            customerPhone: true,
+            package: true,
+            bookingDates: true,
+            preWeddingDate: true,
+            address: true,
+            status: true,
+            paymentStatus: true,
+            paymentBreakdown: true,
+            notes: true
+        };
+        
+        // Filter updates to only allowed fields
+        const filteredUpdates = {};
+        for (const key in updates) {
+            if (allowedUpdates[key]) {
+                filteredUpdates[key] = updates[key];
+            }
+        }
+        
+        // Add audit info
+        filteredUpdates.updatedAt = new Date();
+        filteredUpdates.updatedBy = req.admin._id; // Assuming you have admin info in req
+        
+        console.log('Filtered updates:', filteredUpdates);
+        console.log('Attempting to find and update booking with ID:', id);
+        
+        // CRITICAL: Add validation right before database operation
+        console.log('ID value before database operation:', id);
+        if (!id || id === "undefined" || !mongoose.Types.ObjectId.isValid(id)) {
+            console.error('CRITICAL ERROR: Invalid ID at database operation:', id);
+            console.error('Request params:', req.params);
+            console.error('Request body:', req.body);
+            throw new Error(`Invalid booking ID: ${id}`);
+        }
+        
+        const booking = await Booking.findByIdAndUpdate(
+            id,
+            { $set: filteredUpdates },
+            { new: true, runValidators: true }
+        );
+        
+        if (!booking) {
+            console.error('❌ Booking not found with ID:', id);
+            return res.status(404).json({ message: 'Booking not found' });
+        }
+        
+        console.log('✅ Booking updated successfully:', booking._id);
+        res.json({
+            message: 'Booking updated successfully',
+            booking
+        });
+    } catch (error) {
+        console.error('❌ Error updating booking:', error);
+        console.error('Error stack:', error.stack);
+        
+        // More specific error handling
+        if (error.name === 'CastError') {
+            console.error('💥 CAST ERROR - Invalid ID reached database level');
+            return res.status(400).json({ 
+                message: 'Invalid booking ID format',
+                details: 'The booking ID must be a valid MongoDB ObjectId'
+            });
+        }
+        
+        res.status(500).json({ 
+            message: 'Error updating booking', 
+            error: error.message
+        });
+    }
+});
+
 app.patch('/api/admin/bookings/:id/status', authenticateAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body;
+        
+        console.log('=== UPDATE BOOKING STATUS DEBUG ===');
+        console.log('Request params:', req.params);
+        console.log('ID parameter:', id);
+        console.log('Status parameter:', status);
+        
+        // Validate ID parameter
+        if (!id || id === "undefined" || id === undefined || id === null) {
+            console.error('❌ Invalid booking ID received:', id);
+            return res.status(400).json({ 
+                success: false,
+                message: 'Invalid booking ID',
+                details: 'The booking ID is missing or invalid'
+            });
+        }
+        
+        // Check if it's a valid MongoDB ObjectId
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            console.error('❌ Invalid MongoDB ObjectId format:', id);
+            return res.status(400).json({ 
+                success: false,
+                message: 'Invalid booking ID format',
+                details: 'The booking ID must be a valid MongoDB ObjectId (24 hex characters)'
+            });
+        }
+        
+        console.log('✅ ID validation passed, proceeding with status update...');
+        
+        const booking = await Booking.findByIdAndUpdate(
+            id,
+            { status },
+            { new: true }
+        );
+        
+        if (!booking) {
+            console.error('❌ Booking not found with ID:', id);
+            return res.status(404).json({ error: 'Booking not found' });
+        }
+        
+        console.log('✅ Booking status updated successfully:', booking._id);
+        res.json({ success: true, booking });
+    } catch (err) {
+        console.error('❌ Error updating booking status:', err);
+        console.error('Error stack:', err.stack);
+        
+        // More specific error handling
+        if (err.name === 'CastError') {
+            console.error('💥 CAST ERROR - Invalid ID reached database level');
+            return res.status(400).json({ 
+                success: false,
+                message: 'Invalid booking ID format',
+                details: 'The booking ID must be a valid MongoDB ObjectId'
+            });
+        }
+        
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to update booking status',
+            details: err.message
+        });
+    }
+});
+
+// ===== DELETE BOOKING ENDPOINT ===== //
+
+app.delete('/api/admin/bookings/:id', authenticateAdmin, async (req, res) => {
   try {
-    const { status } = req.body;
-    const booking = await Booking.findByIdAndUpdate(
-      req.params.id,
-      { status },
-      { new: true }
-    );
+    const { id } = req.params;
     
-    if (!booking) return res.status(404).json({ error: 'Booking not found' });
+    console.log('=== DELETE BOOKING REQUEST ===');
+    console.log('Booking ID:', id);
     
-    const statusUpdateHtml = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <style>
-        body { font-family: 'Arial', sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-        .header { background-color: #00acc1; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }
-        .content { padding: 20px; background-color: #f9f9f9; border-radius: 0 0 5px 5px; }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>Booking Status Update</h1>
-      </div>
-      <div class="content">
-        <p>Dear ${booking.customerName},</p>
-        <p>The status of your booking (ID: ${booking._id}) has been updated to <strong>${status}</strong>.</p>
-        <p>If you have any questions, please don't hesitate to contact us.</p>
-        <p>Best regards,<br>The Joker Creation Studio Team</p>
-      </div>
-    </body>
-    </html>
-    `;
+    // Validate ID parameter
+    if (!id || id === "undefined" || id === "null") {
+      console.error('❌ Invalid booking ID received:', id);
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid booking ID',
+        details: 'The booking ID is missing or invalid'
+      });
+    }
     
-    await transporter.sendMail({
-      from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
-      to: booking.customerEmail,
-      subject: `Your Booking Status Has Been Updated to ${status}`,
-      html: statusUpdateHtml
+    // Check if it's a valid MongoDB ObjectId
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      console.error('❌ Invalid MongoDB ObjectId format:', id);
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid booking ID format',
+        details: 'The booking ID must be a valid MongoDB ObjectId (24 hex characters)'
+      });
+    }
+    
+    // Find the booking first to check if it exists
+    const booking = await Booking.findById(id);
+    if (!booking) {
+      console.error('❌ Booking not found with ID:', id);
+      return res.status(404).json({ 
+        success: false,
+        message: 'Booking not found',
+        details: 'No booking exists with the provided ID'
+      });
+    }
+    
+    console.log('✅ Booking found, proceeding with deletion:', {
+      id: booking._id,
+      customerName: booking.customerName,
+      customerEmail: booking.customerEmail,
+      status: booking.status
     });
     
-    res.json({ success: true, booking });
-  } catch (err) {
-    console.error('Error updating booking:', err);
-    res.status(500).json({ error: 'Failed to update booking' });
+    // Delete the booking
+    await Booking.findByIdAndDelete(id);
+    
+    console.log('✅ Booking deleted successfully');
+    
+    res.json({ 
+      success: true,
+      message: 'Booking deleted successfully',
+      deletedBooking: {
+        id: booking._id,
+        customerName: booking.customerName,
+        customerEmail: booking.customerEmail
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error deleting booking:', error);
+    console.error('Error stack:', error.stack);
+    
+    // More specific error handling
+    if (error.name === 'CastError') {
+      console.error('💥 CAST ERROR - Invalid ID reached database level');
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid booking ID format',
+        details: 'The booking ID must be a valid MongoDB ObjectId'
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false,
+      message: 'Error deleting booking', 
+      error: error.message,
+      // Include stack trace only in development
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
@@ -1289,6 +2826,180 @@ app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
   }
 });
 
+// Add to your backend server (Node.js/Express)
+app.post('/api/bookings/complete-payment', async (req, res) => {
+  try {
+    const { bookingId, transactionId, amount } = req.body;
+    
+    console.log('Payment completion request:', { bookingId, transactionId, amount });
+    
+    // Validate input
+    if (!bookingId || !transactionId || !amount) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required fields',
+        missing: {
+          bookingId: !bookingId,
+          transactionId: !transactionId,
+          amount: !amount
+        }
+      });
+    }
+
+    // Find the booking
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Booking not found',
+        bookingId: bookingId
+      });
+    }
+
+    // Convert amount to number safely
+    const paymentAmount = parseFloat(amount);
+    if (isNaN(paymentAmount) || paymentAmount <= 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid amount',
+        amount: amount
+      });
+    }
+
+    // Initialize paymentBreakdown if it doesn't exist
+    if (!booking.paymentBreakdown) {
+      booking.paymentBreakdown = {
+        advancePaid: 0,
+        remainingBalance: booking.finalAmount || 0,
+        dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
+        paymentMethod: 'online',
+        payments: [] // Initialize empty payments array
+      };
+    }
+
+    // Initialize payments array if it doesn't exist
+    if (!booking.paymentBreakdown.payments) {
+      booking.paymentBreakdown.payments = [];
+    }
+
+    // Update payment details
+    booking.paymentBreakdown.advancePaid += paymentAmount;
+    booking.paymentBreakdown.remainingBalance -= paymentAmount;
+    
+    // Ensure remaining balance doesn't go negative
+    if (booking.paymentBreakdown.remainingBalance < 0) {
+      booking.paymentBreakdown.remainingBalance = 0;
+    }
+    
+    // Add payment record to the payments array
+    booking.paymentBreakdown.payments.push({
+      amount: paymentAmount,
+      method: 'online',
+      date: new Date(),
+      transactionId: transactionId,
+      status: 'completed'
+    });
+    
+    // Update payment status
+    if (booking.paymentBreakdown.remainingBalance <= 0) {
+      booking.paymentStatus = 'completed';
+      booking.status = 'confirmed';
+    } else {
+      booking.paymentStatus = 'partially_paid';
+    }
+    
+    booking.updatedAt = new Date();
+    
+    // Save the updated booking
+    await booking.save();
+    
+    console.log('Payment completed successfully for booking:', bookingId);
+    console.log('Updated payment breakdown:', booking.paymentBreakdown);
+    
+    // Send confirmation email
+    try {
+      const confirmationHtml = `
+        <!DOCTYPE html>
+        <html>
+        <head><style>body{font-family:Arial,sans-serif}</style></head>
+        <body>
+          <h2>Payment Received</h2>
+          <p>Dear ${booking.customerName},</p>
+          <p>We've received your payment of ₹${paymentAmount} for booking ${bookingId}.</p>
+          <p><strong>Transaction ID:</strong> ${transactionId}</p>
+          <p><strong>Remaining Balance:</strong> ₹${booking.paymentBreakdown.remainingBalance}</p>
+          <p>Thank you for choosing Joker Creation Studio!</p>
+        </body>
+        </html>
+      `;
+      
+      await transporter.sendMail({
+        from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
+        to: booking.customerEmail,
+        subject: `Payment Received - Booking ${bookingId}`,
+        html: confirmationHtml
+      });
+    } catch (emailError) {
+      console.error('Failed to send confirmation email:', emailError);
+      // Don't fail the request if email fails
+    }
+    
+    res.json({ 
+      success: true,
+      message: 'Payment recorded successfully',
+      booking: {
+        _id: booking._id,
+        paymentStatus: booking.paymentStatus,
+        advancePaid: booking.paymentBreakdown.advancePaid,
+        remainingBalance: booking.paymentBreakdown.remainingBalance,
+        finalAmount: booking.finalAmount,
+        paymentsCount: booking.paymentBreakdown.payments.length
+      }
+    });
+    
+  } catch (err) {
+    console.error('Error completing payment:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to complete payment',
+      details: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error',
+      // Add stack trace only in development
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
+  }
+});
+
+// Add this debug endpoint
+app.get('/api/debug/booking/:id', async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+    
+    if (!booking) {
+      return res.status(404).json({ success: false, error: 'Booking not found' });
+    }
+
+    res.json({
+      success: true,
+      booking: {
+        _id: booking._id,
+        finalAmount: booking.finalAmount,
+        originalAmount: booking.originalAmount,
+        discountAmount: booking.discountAmount,
+        paymentStatus: booking.paymentStatus,
+        status: booking.status,
+        paymentBreakdown: booking.paymentBreakdown,
+        // Check if mongoose document is properly populated
+        isMongooseDocument: booking instanceof mongoose.Document,
+        // Check schema paths
+        schemaPaths: Object.keys(booking.schema.paths)
+      }
+    });
+  } catch (err) {
+    console.error('Debug error:', err);
+    res.status(500).json({ success: false, error: 'Debug failed', details: err.message });
+  }
+});
+
 app.get('/api/admin/users/stats', authenticateAdmin, async (req, res) => {
   try {
     const totalUsers = await Booking.aggregate([
@@ -1314,6 +3025,705 @@ app.get('/api/admin/users/stats', authenticateAdmin, async (req, res) => {
   } catch (err) {
     console.error('Error fetching user stats:', err);
     res.status(500).json({ error: 'Failed to fetch user stats' });
+  }
+});
+
+// ==================== IMAGE UPLOAD & GALLERY API SECTION ====================
+
+// Add this endpoint to handle image uploads to ImgBB
+app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (req, res) => {
+  try {
+    console.log('Image upload request received');
+
+    // ✅ Validate file existence
+    if (!req.file) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'No image file provided' 
+      });
+    }
+
+    // ✅ Validate file type
+    if (!req.file.mimetype.startsWith('image/')) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'File must be an image' 
+      });
+    }
+
+    // ✅ Validate file size (max 32MB for ImgBB free tier)
+    if (req.file.size > 32 * 1024 * 1024) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Image size must be less than 32MB' 
+      });
+    }
+
+    console.log('Uploading to ImgBB:', {
+      filename: req.file.originalname,
+      size: req.file.size,
+      mimetype: req.file.mimetype
+    });
+
+    // ✅ Convert buffer to base64 for ImgBB
+    const base64Image = req.file.buffer.toString('base64');
+    const formData = new FormData();
+    formData.append('image', base64Image);
+
+    // ✅ Get ImgBB API key
+    const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
+    if (!IMGBB_API_KEY) {
+      console.error('ImgBB API key not configured');
+      return res.status(500).json({ 
+        success: false,
+        error: 'Image upload service not configured' 
+      });
+    }
+
+    // ✅ Upload to ImgBB
+    const imgbbResponse = await axios.post(
+      `https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`,
+      formData,
+      { headers: formData.getHeaders(), timeout: 30000 }
+    );
+
+    if (!imgbbResponse.data.success) {
+      console.error('ImgBB upload failed:', imgbbResponse.data.error);
+      return res.status(500).json({ 
+        success: false,
+        error: imgbbResponse.data.error?.message || 'Upload to image service failed' 
+      });
+    }
+
+    const imgbbData = imgbbResponse.data.data;
+
+    console.log('Image uploaded successfully:', {
+      id: imgbbData.id,
+      url: imgbbData.url,
+      deleteUrl: imgbbData.delete_url
+    });
+
+    // ✅ Save to MongoDB with proper fields for delete later
+    const galleryItem = new Gallery({
+      name: req.body.name || req.file.originalname,
+      description: req.body.description || '',
+      category: req.body.category || 'uploads',
+      imageUrl: imgbbData.url,
+      thumbnailUrl: imgbbData.thumb?.url || imgbbData.url,
+      deleteUrl: imgbbData.delete_url,
+      imgbbId: imgbbData.id,
+      uploadedAt: new Date()
+    });
+
+    await galleryItem.save();
+
+    // ✅ Return data for frontend
+    res.json({
+      success: true,
+      galleryId: galleryItem._id,
+      url: imgbbData.url,
+      thumb: imgbbData.thumb?.url || imgbbData.url,
+      medium: imgbbData.medium?.url || imgbbData.url,
+      deleteUrl: imgbbData.delete_url,
+      imageId: imgbbData.id
+    });
+
+  } catch (error) {
+    console.error('Image upload error:', error);
+
+    let errorMessage = 'Failed to upload image';
+    let statusCode = 500;
+
+    if (error.response) {
+      errorMessage = error.response.data.error?.message || 'Image service error';
+      statusCode = error.response.status;
+    } else if (error.request) {
+      errorMessage = 'Network error - could not connect to image service';
+    } else if (error.code === 'ECONNABORTED') {
+      errorMessage = 'Upload timeout - please try again';
+    } else {
+      errorMessage = error.message;
+    }
+
+    res.status(statusCode).json({
+      success: false,
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Add this endpoint to handle multiple image uploads
+app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), async (req, res) => {
+  try {
+    console.log('Multiple image upload request received:', req.files.length);
+    
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'No images provided' 
+      });
+    }
+
+    const results = [];
+    const errors = [];
+
+    // Process each image sequentially to avoid rate limiting
+    for (const file of req.files) {
+      try {
+        // Validate file type
+        if (!file.mimetype.startsWith('image/')) {
+          errors.push({
+            filename: file.originalname,
+            error: 'Not an image file'
+          });
+          continue;
+        }
+
+        // Validate file size
+        if (file.size > 32 * 1024 * 1024) {
+          errors.push({
+            filename: file.originalname,
+            error: 'File too large (max 32MB)'
+          });
+          continue;
+        }
+
+        console.log('Uploading to ImgBB:', file.originalname);
+
+        // Create form data for ImgBB API
+        const formData = new FormData();
+        const base64Image = file.buffer.toString('base64');
+        formData.append('image', base64Image);
+
+        const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
+        
+        if (!IMGBB_API_KEY) {
+          throw new Error('ImgBB API key not configured');
+        }
+
+        // Upload to ImgBB
+        const imgbbResponse = await axios.post(
+          `https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`,
+          formData,
+          {
+            headers: {
+              ...formData.getHeaders(),
+              'Content-Type': 'multipart/form-data'
+            },
+            timeout: 30000
+          }
+        );
+
+        if (imgbbResponse.data.success) {
+          const imgbbData = imgbbResponse.data.data;
+          
+          // Create gallery entry using the correct ImgBB response structure
+          const galleryItem = new Gallery({
+            name: file.originalname,
+            description: '',
+            category: 'uploads',
+            imageUrl: imgbbData.url, // Main image URL
+            thumbnailUrl: imgbbData.thumb?.url || imgbbData.url, // Use thumb URL if available
+            deleteUrl: imgbbData.delete_url,
+            imgbbId: imgbbData.id
+          });
+
+          await galleryItem.save();
+
+          results.push({
+            success: true,
+            filename: file.originalname,
+            galleryId: galleryItem._id,
+            url: imgbbData.url, // Main image URL
+            thumb: imgbbData.thumb?.url || imgbbData.url, // Thumbnail URL
+            medium: imgbbData.medium?.url || imgbbData.url, // Medium size URL
+            deleteUrl: imgbbData.delete_url,
+            imageId: imgbbData.id
+          });
+        } else {
+          errors.push({
+            filename: file.originalname,
+            error: imgbbResponse.data.error?.message || 'Upload failed'
+          });
+        }
+
+        // Add a small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+      } catch (fileError) {
+        console.error(`Error uploading ${file.originalname}:`, fileError);
+        errors.push({
+          filename: file.originalname,
+          error: fileError.message || 'Upload failed'
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      results,
+      errors,
+      summary: {
+        successful: results.length,
+        failed: errors.length,
+        total: req.files.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Multiple image upload error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to upload images',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Revised ImgBB deletion utility function
+async function deleteFromImgBB(deleteUrl) {
+  try {
+    if (!deleteUrl) {
+      console.warn('No delete URL provided for ImgBB');
+      return false;
+    }
+
+    console.log('Attempting to delete from ImgBB:', deleteUrl);
+
+    // Extract image ID and hash from the delete URL
+    // URL format: https://ibb.co/$image_id/$image_hash
+    const urlParts = deleteUrl.split('/');
+    const imageId = urlParts[urlParts.length - 2];
+    const imageHash = urlParts[urlParts.length - 1];
+
+    if (!imageId || !imageHash) {
+      console.error('Could not extract image ID or hash from URL:', deleteUrl);
+      return false;
+    }
+
+    console.log('Extracted image ID:', imageId, 'Hash:', imageHash);
+
+    // Create form data for the ImgBB JSON API
+    const formData = new FormData();
+    formData.append('pathname', `/${imageId}/${imageHash}`);
+    formData.append('action', 'delete');
+    formData.append('delete', 'image');
+    formData.append('from', 'resource');
+    formData.append('deleting[id]', imageId);
+    formData.append('deleting[hash]', imageHash);
+
+    // Additional fields that might be required (from browser observation)
+    formData.append('_', Date.now().toString()); // timestamp
+    formData.append('source', 'image-page');
+
+    // Make the POST request to ImgBB's JSON API
+    const response = await axios.post('https://ibb.co/json', formData, {
+      timeout: 10000,
+      headers: {
+        'Referer': `https://ibb.co/${imageId}/${imageHash}`,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Origin': 'https://ibb.co',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Content-Type': `multipart/form-data; boundary=${formData._boundary}`,
+      }
+    });
+
+    console.log('ImgBB API response status:', response.status);
+    console.log('ImgBB API response data:', response.data);
+
+    // Check if deletion was successful
+    if (response.status === 200) {
+      // The response should contain success information
+      if (response.data && response.data.success) {
+        console.log('ImgBB deletion successful via API');
+        return true;
+      }
+      
+      // Some ImgBB endpoints might return success differently
+      if (response.data && response.data.status === 'success') {
+        console.log('ImgBB deletion successful (status: success)');
+        return true;
+      }
+      
+      // If we get a 200 but no clear success indicator, check for error
+      if (response.data && response.data.error) {
+        console.log('ImgBB deletion failed with error:', response.data.error);
+        return false;
+      }
+      
+      // Assume success for 200 status with no error
+      console.log('ImgBB deletion likely successful (200 status)');
+      return true;
+    }
+
+    console.log('ImgBB deletion failed - non-200 status code:', response.status);
+    return false;
+
+  } catch (error) {
+    console.warn('ImgBB deletion failed:', error.message);
+    
+    // Log more details for debugging
+    if (error.response) {
+      console.log('Response status:', error.response.status);
+      console.log('Response data:', error.response.data);
+    }
+    
+    return false;
+  }
+}
+
+// Update the gallery delete endpoint to use the proper ImgBB deletion
+app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { deleteUrl } = req.body;
+
+    console.log('Delete request received:', { id, deleteUrl });
+
+    // Validate ID
+    if (!id || id === "undefined" || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid gallery item ID' 
+      });
+    }
+
+    // Find the gallery item first
+    const galleryItem = await Gallery.findById(id);
+    if (!galleryItem) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Gallery item not found' 
+      });
+    }
+
+    // Try to delete from ImgBB if we have a delete URL
+    const imgbbDeleteUrl = deleteUrl || galleryItem.deleteUrl;
+    let imgbbDeletionSuccess = false;
+    let imgbbDeletionDetails = 'No ImgBB URL provided';
+    
+    if (imgbbDeleteUrl) {
+      try {
+        imgbbDeletionSuccess = await deleteFromImgBB(imgbbDeleteUrl);
+        
+        if (imgbbDeletionSuccess) {
+          imgbbDeletionDetails = 'Image successfully deleted from ImgBB';
+          console.log('ImgBB deletion successful');
+        } else {
+          imgbbDeletionDetails = 'Failed to delete image from ImgBB';
+          console.warn('ImgBB deletion failed');
+        }
+      } catch (imgbbError) {
+        imgbbDeletionDetails = `ImgBB deletion error: ${imgbbError.message}`;
+        console.warn('ImgBB deletion error:', imgbbError.message);
+      }
+    }
+
+    // Delete from database
+    await Gallery.findByIdAndDelete(id);
+
+    res.json({ 
+      success: true, 
+      message: 'Gallery item deleted successfully',
+      details: {
+        database: { deleted: true, id: id },
+        imgbb: { 
+          attempted: !!imgbbDeleteUrl,
+          success: imgbbDeletionSuccess,
+          details: imgbbDeletionDetails,
+          url: imgbbDeleteUrl || null
+        }
+      }
+    });
+
+  } catch (err) {
+    console.error('Error deleting gallery item:', err);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to delete gallery item',
+      details: err.message
+    });
+  }
+});
+
+// Enhanced debug endpoint to test the proper ImgBB API
+app.post('/api/admin/imgbb/debug', authenticateAdmin, async (req, res) => {
+  try {
+    const { deleteUrl } = req.body;
+
+    if (!deleteUrl) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Delete URL is required' 
+      });
+    }
+
+    console.log('Debugging ImgBB deletion URL:', deleteUrl);
+
+    // Extract image ID and hash
+    const urlParts = deleteUrl.split('/');
+    const imageId = urlParts[urlParts.length - 2];
+    const imageHash = urlParts[urlParts.length - 1];
+
+    if (!imageId || !imageHash) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid ImgBB URL format'
+      });
+    }
+
+    // Test the API endpoint
+    const formData = new FormData();
+    formData.append('pathname', `/${imageId}/${imageHash}`);
+    formData.append('action', 'delete');
+    formData.append('delete', 'image');
+    formData.append('from', 'resource');
+    formData.append('deleting[id]', imageId);
+    formData.append('deleting[hash]', imageHash);
+    formData.append('_', Date.now().toString());
+
+    const response = await axios.post('https://ibb.co/json', formData, {
+      timeout: 10000,
+      headers: {
+        'Referer': `https://ibb.co/${imageId}/${imageHash}`,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Origin': 'https://ibb.co',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Content-Type': `multipart/form-data; boundary=${formData._boundary}`,
+      }
+    });
+
+    res.json({
+      success: true,
+      status: response.status,
+      data: response.data,
+      urlAnalyzed: deleteUrl,
+      extracted: { imageId, imageHash }
+    });
+
+  } catch (error) {
+    console.error('Debug error:', error);
+    
+    let errorDetails = error.message;
+    if (error.response) {
+      errorDetails = {
+        status: error.response.status,
+        data: error.response.data,
+        headers: error.response.headers
+      };
+    }
+
+    res.status(500).json({ 
+      success: false,
+      error: 'Debug failed',
+      details: errorDetails
+    });
+  }
+});
+
+// Get all gallery items
+app.get('/api/admin/gallery', authenticateAdmin, async (req, res) => {
+  try {
+    const { category, featured, search, page = 1, limit = 50 } = req.query;
+    let query = {};
+    
+    if (category && category !== 'all') {
+      query.category = category;
+    }
+    
+    if (featured === 'true') {
+      query.featured = true;
+    }
+    
+    if (search) {
+      const searchRegex = new RegExp(search, 'i');
+      query.$or = [
+        { name: searchRegex },
+        { description: searchRegex }
+      ];
+    }
+    
+    const skip = (page - 1) * limit;
+    const images = await Gallery.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Gallery.countDocuments(query);
+    
+    res.json({
+      success: true,
+      images,
+      total,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page)
+    });
+  } catch (err) {
+    console.error('Error fetching gallery:', err);
+    res.status(500).json({ error: 'Failed to fetch gallery images' });
+  }
+});
+
+// Add gallery item (from URL)
+app.post('/api/admin/gallery/url', authenticateAdmin, async (req, res) => {
+  try {
+    const { name, description, category, featured, imageUrl } = req.body;
+
+    // ✅ Check if image URL is provided
+    if (!imageUrl) {
+      return res.status(400).json({ success: false, error: 'Image URL is required' });
+    }
+
+    // ✅ Validate URL format
+    try {
+      new URL(imageUrl);
+    } catch {
+      return res.status(400).json({ success: false, error: 'Invalid image URL' });
+    }
+
+    // ✅ Save the image URL directly in MongoDB
+    const galleryItem = new Gallery({
+      name: name || 'Untitled',
+      description: description || '',
+      category: category || 'manual', // differentiate manual URLs
+      featured: featured === true,
+      imageUrl,           // main image URL (from direct link)
+      thumbnailUrl: imageUrl, // thumbnail same as main URL
+      uploadedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    await galleryItem.save();
+
+    // ✅ Return saved gallery item info
+    res.json({
+      success: true,
+      message: 'Image URL saved successfully',
+      galleryItem
+    });
+
+  } catch (err) {
+    console.error('Error adding gallery item from URL:', err);
+    res.status(500).json({ success: false, error: 'Failed to add gallery item' });
+  }
+});
+
+// Update gallery item
+app.put('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, category, featured } = req.body;
+    
+    // Validate ID
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: 'Invalid gallery item ID' });
+    }
+    
+    const galleryItem = await Gallery.findByIdAndUpdate(
+      id,
+      {
+        name,
+        description,
+        category,
+        featured,
+        updatedAt: new Date()
+      },
+      { new: true, runValidators: true }
+    );
+    
+    if (!galleryItem) {
+      return res.status(404).json({ error: 'Gallery item not found' });
+    }
+    
+    res.json({ success: true, image: galleryItem });
+  } catch (err) {
+    console.error('Error updating gallery item:', err);
+    res.status(500).json({ error: 'Failed to update gallery item' });
+  }
+});
+
+// Toggle featured status
+app.patch('/api/admin/gallery/:id/featured', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { featured } = req.body;
+    
+    // Validate ID
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: 'Invalid gallery item ID' });
+    }
+    
+    const galleryItem = await Gallery.findByIdAndUpdate(
+      id,
+      { featured: featured === true, updatedAt: new Date() },
+      { new: true }
+    );
+    
+    if (!galleryItem) {
+      return res.status(404).json({ error: 'Gallery item not found' });
+    }
+    
+    res.json({ success: true, image: galleryItem });
+  } catch (err) {
+    console.error('Error toggling featured status:', err);
+    res.status(500).json({ error: 'Failed to update featured status' });
+  }
+});
+
+// Get gallery stats
+app.get('/api/admin/gallery/stats', authenticateAdmin, async (req, res) => {
+  try {
+    const totalImages = await Gallery.countDocuments();
+    const featuredImages = await Gallery.countDocuments({ featured: true });
+    
+    const categoryStats = await Gallery.aggregate([
+      { $group: { _id: '$category', count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]);
+    
+    const recentUploads = await Gallery.countDocuments({
+      createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+    });
+    
+    res.json({
+      success: true,
+      stats: {
+        total: totalImages,
+        featured: featuredImages,
+        recent: recentUploads,
+        byCategory: categoryStats
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching gallery stats:', err);
+    res.status(500).json({ error: 'Failed to fetch gallery stats' });
+  }
+});
+
+// Public portfolio endpoint
+app.get('/api/portfolio', async (req, res) => {
+  try {
+    const images = await Gallery.find().sort({ createdAt: -1 }); // newest first
+
+    // Map the images to public-friendly format
+    const response = images.map(item => ({
+      _id: item._id,
+      name: item.name,
+      description: item.description,
+      category: item.category,
+      featured: item.featured,
+      imageUrl: item.imageUrl,  // make sure this is a public URL
+      uploadedAt: item.createdAt
+    }));
+
+    res.json({ success: true, images: response });
+  } catch (err) {
+    console.error('Error fetching portfolio images:', err);
+    res.status(500).json({ error: 'Failed to fetch portfolio images' });
   }
 });
 
@@ -1947,96 +4357,6 @@ app.post('/api/admin/gallery', authenticateAdmin, upload.array('images', 10), as
   }
 });
 
-app.get('/api/admin/gallery', authenticateAdmin, async (req, res) => {
-  try {
-    const { category, featured, search, page = 1, limit = 12 } = req.query;
-    let query = {};
-    
-    if (category) {
-      query.category = category;
-    }
-    
-    if (featured === 'true') {
-      query.featured = true;
-    }
-    
-    if (search) {
-      const searchRegex = new RegExp(search, 'i');
-      query.$or = [
-        { name: searchRegex },
-        { description: searchRegex }
-      ];
-    }
-    
-    const skip = (page - 1) * limit;
-    const images = await Gallery.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-    
-    const total = await Gallery.countDocuments(query);
-    
-    res.json({
-      success: true,
-      images,
-      total,
-      totalPages: Math.ceil(total / limit),
-      currentPage: parseInt(page)
-    });
-  } catch (err) {
-    console.error('Error fetching gallery images:', err);
-    res.status(500).json({ error: 'Failed to fetch gallery images' });
-  }
-});
-
-app.put('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
-  try {
-    const { name, description, category, featured } = req.body;
-    
-    const galleryItem = await Gallery.findByIdAndUpdate(
-      req.params.id,
-      {
-        name,
-        description,
-        category,
-        featured,
-        updatedAt: new Date()
-      },
-      { new: true }
-    );
-    
-    if (!galleryItem) {
-      return res.status(404).json({ error: 'Gallery item not found' });
-    }
-    
-    res.json({ success: true, image: galleryItem });
-  } catch (err) {
-    console.error('Error updating gallery item:', err);
-    res.status(500).json({ error: 'Failed to update gallery item' });
-  }
-});
-
-app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
-  try {
-    const galleryItem = await Gallery.findById(req.params.id);
-    
-    if (!galleryItem) {
-      return res.status(404).json({ error: 'Gallery item not found' });
-    }
-    
-    if (fs.existsSync(path.join(__dirname, galleryItem.imageUrl))) {
-      fs.unlinkSync(path.join(__dirname, galleryItem.imageUrl));
-    }
-    
-    await galleryItem.remove();
-    
-    res.json({ success: true, message: 'Gallery item deleted successfully' });
-  } catch (err) {
-    console.error('Error deleting gallery item:', err);
-    res.status(500).json({ error: 'Failed to delete gallery item' });
-  }
-});
-
 // ===== SETTINGS ROUTES ===== //
 
 app.get('/admin', (req, res) => {
@@ -2293,14 +4613,27 @@ app.post('/save-booking', async (req, res) => {
     // Validate required fields
     if (!req.body.customerName || !req.body.customerEmail || !req.body.customerPhone || 
         !req.body.package || !req.body.bookingDates || !req.body.address || !req.body.transactionId) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      console.error('Missing required fields:', req.body);
+      return res.status(400).json({ 
+        success: false,
+        error: 'Missing required fields',
+        missing: {
+          customerName: !req.body.customerName,
+          customerEmail: !req.body.customerEmail,
+          customerPhone: !req.body.customerPhone,
+          package: !req.body.package,
+          bookingDates: !req.body.bookingDates,
+          address: !req.body.address,
+          transactionId: !req.body.transactionId
+        }
+      });
     }
 
     const {
       customerName,
       customerEmail,
       customerPhone,
-      package,
+      package: packageName,
       bookingDates,
       preWeddingDate,
       address,
@@ -2308,28 +4641,53 @@ app.post('/save-booking', async (req, res) => {
       userId,
       couponCode,
       discountAmount = 0,
-      amountPaid, // The actual amount paid in advance
       originalAmount,
-      paymentMethod
+      amountPaid,
+      paymentMethod = 'online'
     } = req.body;
 
     // Calculate amounts
-    const packagePrice = originalAmount || parseInt(package.toString().replace(/[^0-9]/g, '')) || 0;
-    const finalAmountAfterDiscount = packagePrice - (parseInt(discountAmount) || 0);
+    const packagePrice = parseInt(originalAmount) || parseInt(packageName.toString().replace(/[^0-9]/g, '')) || 0;
+    const discount = parseInt(discountAmount) || 0;
+    const finalAmountAfterDiscount = packagePrice - discount;
     
-    // Payment calculations (10% advance standard)
-    const advancePercentage = 0.10; // 10% advance
-    const calculatedAdvancePaid = amountPaid || Math.round(finalAmountAfterDiscount * advancePercentage);
-    const remainingBalance = finalAmountAfterDiscount - calculatedAdvancePaid;
+    // Use amountPaid from request or calculate 10%
+    const advancePaid = parseInt(amountPaid) || Math.round(finalAmountAfterDiscount * 0.10);
+    const remainingBalance = finalAmountAfterDiscount - advancePaid;
     
     // Determine payment status
     const paymentStatus = remainingBalance <= 0 ? 'completed' : 'partially_paid';
+
+    // Build discount details if coupon was applied
+    let discountDetails = {};
+    if (couponCode && discount > 0) {
+      discountDetails = {
+        description: `Coupon: ${couponCode}`,
+        appliedAt: new Date(),
+        validUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
+      };
+    }
+
+    console.log('Creating new booking with data:', {
+      customerName,
+      customerEmail,
+      customerPhone,
+      packageName,
+      bookingDates,
+      preWeddingDate,
+      address,
+      transactionId,
+      paymentStatus,
+      finalAmountAfterDiscount,
+      advancePaid,
+      remainingBalance
+    });
 
     const newBooking = new Booking({
       customerName: customerName.trim(),
       customerEmail: customerEmail.trim(),
       customerPhone: customerPhone.trim(),
-      package,
+      package: packageName,
       bookingDates,
       preWeddingDate: preWeddingDate || undefined,
       address: address.trim(),
@@ -2338,306 +4696,350 @@ app.post('/save-booking', async (req, res) => {
       status: 'pending',
       userId: userId || null,
       couponCode: couponCode || undefined,
-      discountAmount: parseInt(discountAmount) || 0,
-      finalAmount: finalAmountAfterDiscount,
+      discountType: discount > 0 ? 'fixed' : null,
+      discountValue: discount,
       originalAmount: packagePrice,
+      discountAmount: discount,
+      finalAmount: finalAmountAfterDiscount,
+      discountDetails: discountDetails,
       paymentBreakdown: {
-        advancePaid: calculatedAdvancePaid,
+        advancePaid: advancePaid,
         remainingBalance: remainingBalance,
         dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
-        paymentMethod: paymentMethod || 'online'
+        paymentMethod: paymentMethod,
+        payments: [{
+          amount: advancePaid,
+          method: paymentMethod,
+          date: new Date(),
+          transactionId: transactionId,
+          status: 'completed'
+        }]
+      },
+      updatedBy: 'system'
+    });
+
+    // Save the booking to MongoDB
+    console.log('Saving booking to database...');
+    const savedBooking = await newBooking.save();
+    console.log('Booking saved successfully with ID:', savedBooking._id);
+
+    // Format dates for display
+    const formatDate = (dateString) => {
+      if (!dateString || dateString === "Not specified") return dateString;
+      try {
+        return new Date(dateString).toLocaleDateString('en-IN', {
+          day: 'numeric', month: 'short', year: 'numeric'
+        });
+      } catch (e) {
+        return dateString;
       }
-    });
+    };
 
-    await newBooking.save();
-
-    // Customer Email Template
-    const bookingConfirmationHtml = `
-<!DOCTYPE html>
-<html>
-<head>
-  <style>
-    body { 
-      font-family: 'Arial', sans-serif; 
-      line-height: 1.6; 
-      color: #333; 
-      max-width: 600px; 
-      margin: 0 auto; 
-      padding: 20px; 
+    // Parse booking dates
+    let eventStartDate = '';
+    let eventEndDate = '';
+    if (bookingDates && bookingDates.includes(' to ')) {
+      const dates = bookingDates.split(' to ');
+      eventStartDate = formatDate(dates[0].trim());
+      eventEndDate = formatDate(dates[1].trim());
     }
-    .header { 
-      background-color: #00acc1; 
-      color: white; 
-      padding: 20px; 
-      text-align: center; 
-      border-radius: 5px 5px 0 0; 
+
+    // Send confirmation emails using YOUR templates
+    try {
+      // Customer Email Template (Your original template)
+      const bookingConfirmationHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <style>
+          body { 
+            font-family: 'Arial', sans-serif; 
+            line-height: 1.6; 
+            color: #333; 
+            max-width: 600px; 
+            margin: 0 auto; 
+            padding: 20px; 
+          }
+          .header { 
+            background-color: #00acc1; 
+            color: white; 
+            padding: 20px; 
+            text-align: center; 
+            border-radius: 5px 5px 0 0; 
+          }
+          .content { 
+            padding: 20px; 
+            background-color: #f9f9f9; 
+            border-radius: 0 0 5px 5px; 
+          }
+          .section {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: white;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+          }
+          .detail-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #eee;
+          }
+          .detail-label {
+            font-weight: bold;
+            color: #555;
+          }
+          .detail-value {
+            text-align: right;
+          }
+          .total-row {
+            font-weight: bold;
+            font-size: 1.1em;
+            margin-top: 10px;
+            color: #00acc1;
+          }
+          .payment-button {
+            display: inline-block;
+            background-color: #00acc1;
+            color: white;
+            padding: 12px 25px;
+            text-decoration: none;
+            border-radius: 5px;
+            margin-top: 15px;
+            font-weight: bold;
+          }
+          .logo {
+            text-align: center;
+            margin-bottom: 20px;
+          }
+          .logo img {
+            max-width: 180px;
+          }
+          .highlight {
+            background-color: #fff8e1;
+            padding: 10px;
+            border-radius: 5px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h1>Booking Confirmation</h1>
+        </div>
+        <div class="content">
+          <div class="logo">
+            <img src="https://jokercreation.store/logo.png" alt="Joker Creation Studio">
+          </div>
+          
+          <p>Dear ${customerName},</p>
+          <p>Thank you for choosing Joker Creation Studio! Your booking has been confirmed.</p>
+          
+          <div class="section">
+            <h3>Booking Details</h3>
+            <div class="detail-row">
+              <span class="detail-label">Booking ID:</span>
+              <span class="detail-value">${savedBooking._id}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Package:</span>
+              <span class="detail-value">${packageName}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Event Date:</span>
+              <span class="detail-value">${eventStartDate} to ${eventEndDate}</span>
+            </div>
+            ${preWeddingDate ? `
+            <div class="detail-row">
+              <span class="detail-label">Pre-Wedding Date:</span>
+              <span class="detail-value">${formatDate(preWeddingDate)}</span>
+            </div>` : ''}
+          </div>
+
+          <div class="section highlight">
+            <h3>Payment Summary</h3>
+            
+            <div class="detail-row">
+              <span class="detail-label">Package Price:</span>
+              <span class="detail-value">₹${packagePrice.toLocaleString('en-IN')}</span>
+            </div>
+
+            ${couponCode ? `
+            <div class="detail-row">
+              <span class="detail-label">Discount (${couponCode}):</span>
+              <span class="detail-value">- ₹${discount.toLocaleString('en-IN')}</span>
+            </div>` : ''}
+
+            <div class="detail-row total-row">
+              <span class="detail-label">Final Amount:</span>
+              <span class="detail-value">₹${finalAmountAfterDiscount.toLocaleString('en-IN')}</span>
+            </div>
+
+            <div class="detail-row">
+              <span class="detail-label">Advance Paid (10%):</span>
+              <span class="detail-value">₹${advancePaid.toLocaleString('en-IN')}</span>
+            </div>
+
+            <div class="detail-row total-row">
+              <span class="detail-label">Remaining Balance:</span>
+              <span class="detail-value">₹${remainingBalance.toLocaleString('en-IN')}</span>
+            </div>
+
+            ${remainingBalance > 0 ? `
+            <div style="text-align: center; margin-top: 20px;">
+              <a href="https://jokercreation.store/payment?bookingId=${savedBooking._id}" 
+                 class="payment-button">
+                Pay Remaining ₹${remainingBalance.toLocaleString('en-IN')}
+              </a>
+            </div>` : ''}
+          </div>
+
+          <p>We'll contact you soon to discuss your event details. For any questions, reply to this email.</p>
+          <p>Best regards,<br>The Joker Creation Studio Team</p>
+        </div>
+      </body>
+      </html>
+      `;
+
+      // Admin Email Template (Your original template)
+      const adminNotificationHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <style>
+          /* Similar styles as customer email but with admin colors */
+          .header { background-color: #ff5722; }
+          .total-row { color: #ff5722; }
+          .highlight { background-color: #ffebee; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h1>New Booking Notification</h1>
+        </div>
+        <div class="content">
+          <div class="logo">
+            <img src="https://jokercreation.store/logo.png" alt="Joker Creation Studio">
+          </div>
+          
+          <p>A new booking has been created:</p>
+          
+          <div class="section">
+            <h3>Customer Details</h3>
+            <div class="detail-row">
+              <span class="detail-label">Name:</span>
+              <span class="detail-value">${customerName}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Email:</span>
+              <span class="detail-value">${customerEmail}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Phone:</span>
+              <span class="detail-value">${customerPhone}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Address:</span>
+              <span class="detail-value">${address}</span>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>Booking Details</h3>
+            <div class="detail-row">
+              <span class="detail-label">Booking ID:</span>
+              <span class="detail-value">${savedBooking._id}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Package:</span>
+              <span class="detail-value">${packageName}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Event Date:</span>
+              <span class="detail-value">${eventStartDate} to ${eventEndDate}</span>
+            </div>
+            ${preWeddingDate ? `
+            <div class="detail-row">
+              <span class="detail-label">Pre-Wedding Date:</span>
+              <span class="detail-value">${formatDate(preWeddingDate)}</span>
+            </div>` : ''}
+          </div>
+
+          <div class="section highlight">
+            <h3>Payment Information</h3>
+            
+            <div class="detail-row">
+              <span class="detail-label">Package Price:</span>
+              <span class="detail-value">₹${packagePrice.toLocaleString('en-IN')}</span>
+            </div>
+
+            ${couponCode ? `
+            <div class="detail-row">
+              <span class="detail-label">Discount (${couponCode}):</span>
+              <span class="detail-value">- ₹${discount.toLocaleString('en-IN')}</span>
+            </div>` : ''}
+
+            <div class="detail-row total-row">
+              <span class="detail-label">Final Amount:</span>
+              <span class="detail-value">₹${finalAmountAfterDiscount.toLocaleString('en-IN')}</span>
+            </div>
+
+            <div class="detail-row">
+              <span class="detail-label">Advance Paid:</span>
+              <span class="detail-value">₹${advancePaid.toLocaleString('en-IN')}</span>
+            </div>
+
+            <div class="detail-row">
+              <span class="detail-label">Payment Method:</span>
+              <span class="detail-value">${paymentMethod}</span>
+            </div>
+
+            <div class="detail-row total-row">
+              <span class="detail-label">Remaining Balance:</span>
+              <span class="detail-value">₹${remainingBalance.toLocaleString('en-IN')}</span>
+            </div>
+
+            <div class="detail-row">
+              <span class="detail-label">Transaction ID:</span>
+              <span class="detail-value">${transactionId}</span>
+            </div>
+          </div>
+
+          <p>Please review this booking in the admin panel.</p>
+        </div>
+      </body>
+      </html>
+      `;
+
+      // Send customer email
+      await transporter.sendMail({
+        from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
+        to: customerEmail,
+        subject: 'Booking Confirmation - Joker Creation Studio',
+        html: bookingConfirmationHtml
+      });
+
+      // Send admin email
+      await transporter.sendMail({
+        from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
+        to: process.env.ADMIN_EMAIL || 'jokercreationbuisness@gmail.com',
+        subject: `New Booking: ${customerName} - ${packageName}`,
+        html: adminNotificationHtml
+      });
+
+      console.log('Confirmation emails sent successfully');
+    } catch (emailError) {
+      console.error('Failed to send confirmation emails:', emailError);
+      // Don't fail the request if email fails
     }
-    .content { 
-      padding: 20px; 
-      background-color: #f9f9f9; 
-      border-radius: 0 0 5px 5px; 
-    }
-    .section {
-      margin: 20px 0;
-      padding: 15px;
-      background-color: white;
-      border-radius: 5px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    .detail-row {
-      display: flex;
-      justify-content: space-between;
-      margin-bottom: 8px;
-      padding-bottom: 8px;
-      border-bottom: 1px solid #eee;
-    }
-    .detail-label {
-      font-weight: bold;
-      color: #555;
-    }
-    .detail-value {
-      text-align: right;
-    }
-    .total-row {
-      font-weight: bold;
-      font-size: 1.1em;
-      margin-top: 10px;
-      color: #00acc1;
-    }
-    .payment-button {
-      display: inline-block;
-      background-color: #00acc1;
-      color: white;
-      padding: 12px 25px;
-      text-decoration: none;
-      border-radius: 5px;
-      margin-top: 15px;
-      font-weight: bold;
-    }
-    .logo {
-      text-align: center;
-      margin-bottom: 20px;
-    }
-    .logo img {
-      max-width: 180px;
-    }
-    .highlight {
-      background-color: #fff8e1;
-      padding: 10px;
-      border-radius: 5px;
-    }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h1>Booking Confirmation</h1>
-  </div>
-  <div class="content">
-    <div class="logo">
-      <img src="https://jokercreation.store/logo.png" alt="Joker Creation Studio">
-    </div>
-    
-    <p>Dear ${customerName},</p>
-    <p>Thank you for choosing Joker Creation Studio! Your booking has been confirmed.</p>
-    
-    <div class="section">
-      <h3>Booking Details</h3>
-      <div class="detail-row">
-        <span class="detail-label">Booking ID:</span>
-        <span class="detail-value">${newBooking._id}</span>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">Package:</span>
-        <span class="detail-value">${package}</span>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">Event Date:</span>
-        <span class="detail-value">${bookingDates}</span>
-      </div>
-      ${preWeddingDate ? `
-      <div class="detail-row">
-        <span class="detail-label">Pre-Wedding Date:</span>
-        <span class="detail-value">${preWeddingDate}</span>
-      </div>` : ''}
-    </div>
-
-    <div class="section highlight">
-      <h3>Payment Summary</h3>
-      
-      <div class="detail-row">
-        <span class="detail-label">Package Price:</span>
-        <span class="detail-value">₹${packagePrice}</span>
-      </div>
-
-      ${couponCode ? `
-      <div class="detail-row">
-        <span class="detail-label">Discount (${couponCode}):</span>
-        <span class="detail-value">- ₹${discountAmount}</span>
-      </div>` : ''}
-
-      <div class="detail-row total-row">
-        <span class="detail-label">Final Amount:</span>
-        <span class="detail-value">₹${finalAmountAfterDiscount}</span>
-      </div>
-
-      <div class="detail-row">
-        <span class="detail-label">Advance Paid (${(advancePercentage * 100)}%):</span>
-        <span class="detail-value">₹${calculatedAdvancePaid}</span>
-      </div>
-
-      <div class="detail-row total-row">
-        <span class="detail-label">Remaining Balance:</span>
-        <span class="detail-value">₹${remainingBalance}</span>
-      </div>
-
-      ${remainingBalance > 0 ? `
-      <div style="text-align: center; margin-top: 20px;">
-        <a href="https://jokercreation.store/payment?bookingId=${newBooking._id}" 
-           class="payment-button">
-          Pay Remaining ₹${remainingBalance}
-        </a>
-      </div>` : ''}
-    </div>
-
-    <p>We'll contact you soon to discuss your event details. For any questions, reply to this email.</p>
-    <p>Best regards,<br>The Joker Creation Studio Team</p>
-  </div>
-</body>
-</html>
-`;
-
-    // Admin Email Template
-    const adminNotificationHtml = `
-<!DOCTYPE html>
-<html>
-<head>
-  <style>
-    /* Similar styles as customer email but with admin colors */
-    .header { background-color: #ff5722; }
-    .total-row { color: #ff5722; }
-    .highlight { background-color: #ffebee; }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h1>New Booking Notification</h1>
-  </div>
-  <div class="content">
-    <div class="logo">
-      <img src="https://jokercreation.store/logo.png" alt="Joker Creation Studio">
-    </div>
-    
-    <p>A new booking has been created:</p>
-    
-    <div class="section">
-      <h3>Customer Details</h3>
-      <div class="detail-row">
-        <span class="detail-label">Name:</span>
-        <span class="detail-value">${customerName}</span>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">Email:</span>
-        <span class="detail-value">${customerEmail}</span>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">Phone:</span>
-        <span class="detail-value">${customerPhone}</span>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">Address:</span>
-        <span class="detail-value">${address}</span>
-      </div>
-    </div>
-
-    <div class="section">
-      <h3>Booking Details</h3>
-      <div class="detail-row">
-        <span class="detail-label">Booking ID:</span>
-        <span class="detail-value">${newBooking._id}</span>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">Package:</span>
-        <span class="detail-value">${package}</span>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">Event Date:</span>
-        <span class="detail-value">${bookingDates}</span>
-      </div>
-      ${preWeddingDate ? `
-      <div class="detail-row">
-        <span class="detail-label">Pre-Wedding Date:</span>
-        <span class="detail-value">${preWeddingDate}</span>
-      </div>` : ''}
-    </div>
-
-    <div class="section highlight">
-      <h3>Payment Information</h3>
-      
-      <div class="detail-row">
-        <span class="detail-label">Package Price:</span>
-        <span class="detail-value">₹${packagePrice}</span>
-      </div>
-
-      ${couponCode ? `
-      <div class="detail-row">
-        <span class="detail-label">Discount (${couponCode}):</span>
-        <span class="detail-value">- ₹${discountAmount}</span>
-      </div>` : ''}
-
-      <div class="detail-row total-row">
-        <span class="detail-label">Final Amount:</span>
-        <span class="detail-value">₹${finalAmountAfterDiscount}</span>
-      </div>
-
-      <div class="detail-row">
-        <span class="detail-label">Advance Paid:</span>
-        <span class="detail-value">₹${calculatedAdvancePaid}</span>
-      </div>
-
-      <div class="detail-row">
-        <span class="detail-label">Payment Method:</span>
-        <span class="detail-value">${paymentMethod || 'online'}</span>
-      </div>
-
-      <div class="detail-row total-row">
-        <span class="detail-label">Remaining Balance:</span>
-        <span class="detail-value">₹${remainingBalance}</span>
-      </div>
-
-      <div class="detail-row">
-        <span class="detail-label">Transaction ID:</span>
-        <span class="detail-value">${transactionId}</span>
-      </div>
-    </div>
-
-    <p>Please review this booking in the admin panel.</p>
-  </div>
-</body>
-</html>
-`;
-
-    // Send emails
-    await transporter.sendMail({
-      from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
-      to: customerEmail,
-      subject: 'Booking Confirmation - Joker Creation Studio',
-      html: bookingConfirmationHtml
-    });
-
-    await transporter.sendMail({
-      from: `"Joker Creation Studio" <${process.env.EMAIL_USER}>`,
-      to: process.env.ADMIN_EMAIL,
-      subject: `New Booking: ${customerName} - ${package}`,
-      html: adminNotificationHtml
-    });
 
     res.status(200).json({ 
       success: true,
       message: 'Booking saved and confirmation emails sent successfully',
       booking: {
-        id: newBooking._id,
+        id: savedBooking._id,
         finalAmount: finalAmountAfterDiscount,
-        advancePaid: calculatedAdvancePaid,
+        advancePaid: advancePaid,
         remainingBalance: remainingBalance,
         paymentStatus: paymentStatus
       }
@@ -2645,73 +5047,155 @@ app.post('/save-booking', async (req, res) => {
 
   } catch (err) {
     console.error('Error saving booking:', err);
+    console.error('Error details:', err.message);
+    
     res.status(500).json({ 
+      success: false,
       error: 'Failed to save booking',
-      details: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      details: err.message
     });
   }
 });
 
-// Update your create-order endpoint
 app.post('/create-order', async (req, res) => {
   try {
-    const { amount, currency = 'INR' } = req.body;
-    
-    console.log('Creating order for amount:', amount);
+    const { amount } = req.body;
 
-    // Validate amount
-    if (!amount || isNaN(amount) || amount <= 0) {
+    console.log('Create order request received with amount:', amount, 'Type:', typeof amount);
+
+    // Validate the amount parameter
+    if (amount === undefined || amount === null) {
+      console.error('Amount parameter is missing');
       return res.status(400).json({ 
-        error: 'Invalid amount provided',
-        details: 'Amount must be a positive number'
+        success: false,
+        error: 'Amount parameter is required',
+        details: 'Please provide a valid amount value'
       });
     }
 
-    // Validate Razorpay instance
-    if (!razorpayInstance) {
-      return res.status(500).json({ 
-        error: 'Payment service not configured',
-        code: 'PAYMENT_SERVICE_UNAVAILABLE'
+    // Convert to number and validate
+    const numericAmount = parseFloat(amount);
+    if (isNaN(numericAmount)) {
+      console.error('Invalid amount provided:', amount);
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid amount provided',
+        details: 'Amount must be a valid number'
       });
     }
+
+    if (numericAmount <= 0) {
+      console.error('Amount must be greater than 0:', numericAmount);
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid amount',
+        details: 'Amount must be greater than 0'
+      });
+    }
+
+    // Validate maximum amount (Razorpay has limits)
+    if (numericAmount > 1000000) { // 10,00,000 INR maximum
+      console.error('Amount exceeds maximum limit:', numericAmount);
+      return res.status(400).json({ 
+        success: false,
+        error: 'Amount too large',
+        details: 'Maximum amount allowed is ₹10,00,000'
+      });
+    }
+
+    const razorpayAmount = Math.round(numericAmount * 100); // Convert to paise
 
     const options = {
-      amount: Math.round(amount * 100), // Convert to paise
-      currency: currency,
-      receipt: 'receipt_' + Date.now(),
+      amount: razorpayAmount,
+      currency: 'INR',
+      receipt: 'receipt_' + Date.now(), // Unique receipt ID
     };
 
-    // Use promise-based approach instead of callback
-    const order = await razorpayInstance.orders.create(options);
-    
+    console.log('Creating Razorpay order with options:', options);
+
+    // Use promises instead of callbacks for better error handling
+    const order = await new Promise((resolve, reject) => {
+      razorpayInstance.orders.create(options, (err, order) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(order);
+        }
+      });
+    });
+
     console.log('Order created successfully:', order.id);
     
-    res.json({
+    res.json({ 
       success: true,
-      order: {
-        id: order.id,
-        amount: order.amount,
-        currency: order.currency,
-        receipt: order.receipt
-      }
+      id: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      receipt: order.receipt
     });
 
   } catch (err) {
     console.error('Error creating Razorpay order:', err);
     
-    // More specific error handling
-    if (err.error && err.error.description) {
-      return res.status(400).json({ 
-        error: 'Payment gateway error',
-        details: err.error.description,
-        code: err.error.code
-      });
+    // More detailed error information
+    let errorMessage = 'Failed to create order';
+    let errorDetails = err.error ? err.error.description : err.message;
+    
+    // Specific error handling for common Razorpay issues
+    if (err.error && err.error.code === 'BAD_REQUEST_ERROR') {
+      errorMessage = 'Invalid request to payment gateway';
+    } else if (err.error && err.error.code === 'GATEWAY_ERROR') {
+      errorMessage = 'Payment gateway error';
     }
     
     res.status(500).json({ 
-      error: 'Failed to create order',
-      details: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+      success: false,
+      error: errorMessage,
+      details: errorDetails,
+      // Add debugging info in development
+      debug: process.env.NODE_ENV === 'development' ? {
+        reason: err.reason,
+        code: err.code,
+        field: err.field
+      } : undefined
+    });
+  }
+});
+
+// Add this endpoint to check Razorpay configuration
+app.get('/api/check-razorpay-config', (req, res) => {
+  try {
+    // Test if Razorpay instance is properly configured
+    const testOptions = {
+      amount: 1000, // 10 INR
+      currency: 'INR',
+      receipt: 'test_receipt_' + Date.now(),
+    };
+
+    razorpayInstance.orders.create(testOptions, (err, order) => {
+      if (err) {
+        console.error('Razorpay configuration test failed:', err);
+        return res.status(500).json({
+          success: false,
+          error: 'Razorpay configuration error',
+          details: err.error ? err.error.description : err.message
+        });
+      }
+
+      console.log('Razorpay configuration test successful');
+      res.json({
+        success: true,
+        message: 'Razorpay is properly configured',
+        key_id: process.env.RAZORPAY_KEY_ID ? 'Configured' : 'Missing',
+        test_order: order.id
+      });
+    });
+  } catch (err) {
+    console.error('Razorpay config check error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Configuration check failed',
+      details: err.message
     });
   }
 });
@@ -2773,123 +5257,6 @@ app.post('/contact-submit', (req, res) => {
   });
 });
 
-// Add this to your backend server code (Node.js/Express)
-// Add this to your backend server code (Node.js/Express)
-app.post('/api/bookings/complete-payment', async (req, res) => {
-  try {
-    const { bookingId, transactionId, amount } = req.body;
-    
-    console.log('Payment completion request:', { bookingId, transactionId, amount });
-    
-    // Validate input
-    if (!bookingId || !transactionId || !amount) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Missing required fields: bookingId, transactionId, amount' 
-      });
-    }
-
-    // Find the booking
-    const booking = await Booking.findById(bookingId);
-    if (!booking) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Booking not found' 
-      });
-    }
-
-    // Convert amount to number
-    const paymentAmount = parseFloat(amount);
-    
-    // Update payment details
-    if (!booking.paymentBreakdown) {
-      booking.paymentBreakdown = {
-        advancePaid: 0,
-        remainingBalance: booking.finalAmount || 0,
-        payments: []
-      };
-    }
-    
-    booking.paymentBreakdown.advancePaid += paymentAmount;
-    booking.paymentBreakdown.remainingBalance -= paymentAmount;
-    
-    // Add payment record
-    booking.paymentBreakdown.payments.push({
-      amount: paymentAmount,
-      method: 'online',
-      date: new Date(),
-      transactionId: transactionId,
-      status: 'completed'
-    });
-    
-    // Update payment status if fully paid
-    if (booking.paymentBreakdown.remainingBalance <= 0) {
-      booking.paymentStatus = 'completed';
-      booking.status = 'confirmed';
-    } else {
-      booking.paymentStatus = 'partially_paid';
-    }
-    
-    booking.updatedAt = new Date();
-    
-    await booking.save();
-    
-    console.log('Payment completed successfully for booking:', bookingId);
-    
-    res.json({ 
-      success: true,
-      message: 'Payment recorded successfully',
-      booking: {
-        _id: booking._id,
-        paymentStatus: booking.paymentStatus,
-        advancePaid: booking.paymentBreakdown.advancePaid,
-        remainingBalance: booking.paymentBreakdown.remainingBalance
-      }
-    });
-    
-  } catch (err) {
-    console.error('Error completing payment:', err);
-    res.status(500).json({ 
-      success: false,
-      error: 'Failed to complete payment',
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
-  }
-});
-
-// Add to your backend
-app.get('/api/user/bookings', async (req, res) => {
-  try {
-    const { email } = req.query;
-    
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
-    }
-    
-    const bookings = await Booking.find({ customerEmail: email })
-      .sort({ createdAt: -1 })
-      .select('customerName package bookingDates paymentStatus paymentBreakdown finalAmount createdAt');
-    
-    res.json({ 
-      success: true, 
-      bookings: bookings.map(booking => ({
-        _id: booking._id,
-        package: booking.package,
-        bookingDates: booking.bookingDates,
-        paymentStatus: booking.paymentStatus,
-        amountPaid: booking.paymentBreakdown.advancePaid,
-        remainingBalance: booking.paymentBreakdown.remainingBalance,
-        finalAmount: booking.finalAmount,
-        createdAt: booking.createdAt,
-        status: booking.status
-      }))
-    });
-  } catch (err) {
-    console.error('Error fetching user bookings:', err);
-    res.status(500).json({ error: 'Failed to fetch user bookings' });
-  }
-});
-
 // ===== PUBLIC GALLERY ROUTES ===== //
 
 app.get('/api/gallery', async (req, res) => {
@@ -2937,9 +5304,5 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
-
-
-
-
 
 
