@@ -94,27 +94,7 @@ function base64urlToBuffer(base64urlString) {
 }
   
   // Handle string input (base64url)
-  if (typeof base64urlString === 'string') {
-    // Convert base64url to base64
-    let base64 = base64urlString.replace(/-/g, '+').replace(/_/g, '/');
-    
-    // Add padding if needed
-    while (base64.length % 4) {
-      base64 += '=';
-    }
-    
-    try {
-      const buffer = Buffer.from(base64, 'base64');
-      console.log('Successfully converted to buffer, length:', buffer.length);
-      return buffer;
-    } catch (error) {
-      console.error('Error converting base64url to buffer:', error);
-      throw new Error('Invalid base64url string: ' + base64urlString);
-    }
-  }
-  
-  throw new Error('Unsupported input type for base64urlToBuffer: ' + typeof base64urlString);
-}
+ 
 
 // Enhanced buffer to base64url conversion
 // Enhanced buffer to base64url conversion
@@ -5305,6 +5285,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
