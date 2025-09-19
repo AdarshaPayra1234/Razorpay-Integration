@@ -136,6 +136,23 @@ function bufferToBase64url(buffer) {
   throw new Error('Expected Buffer or Uint8Array, got: ' + typeof buffer);
 }
 
+// Helper function to convert various types to Buffer
+function convertToBuffer(input) {
+  if (Buffer.isBuffer(input)) {
+    return input;
+  }
+  if (input instanceof Uint8Array) {
+    return Buffer.from(input);
+  }
+  if (input instanceof ArrayBuffer) {
+    return Buffer.from(input);
+  }
+  if (typeof input === 'string') {
+    return base64urlToBuffer(input);
+  }
+  throw new Error(`Unsupported input type: ${typeof input}`);
+}
+
 const app = express();
 
 // FIX: Enable trust proxy for proper rate limiting behind reverse proxy
@@ -1496,39 +1513,48 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
     // ===== DATA CONVERSION ===== //
      console.log('Converting credential data to proper formats...');
   
-  let credentialIdBuffer;
-  let credentialIdString;
-  
-  try {
-    console.log('Processing credential ID...');
-    console.log('Credential ID from request:', req.body.credential.id);
-    console.log('Raw ID from request:', req.body.credential.rawId);
+  // Convert credential ID to proper formats
+let credentialIdBuffer, credentialIdString;
 
-      // The credential.id from the browser is already a base64url string
-      if (req.body.credential.id && typeof req.body.credential.id === 'string') {
-        console.log('Using credential.id as base64url string');
-        credentialIdString = req.body.credential.id;
-        
-        // Convert to buffer for verification
-        credentialIdBuffer = base64urlToBuffer(credentialIdString);
-      } 
-      // Fallback to rawId if needed
-      else if (req.body.credential.rawId && typeof req.body.credential.rawId === 'string') {
-        console.log('Using credential.rawId as base64url string');
-        credentialIdString = req.body.credential.rawId;
-        credentialIdBuffer = base64urlToBuffer(credentialIdString);
-      }
-      // Handle ArrayBuffer (shouldn't happen with our frontend changes, but just in case)
-      else if (req.body.credential.rawId && (req.body.credential.rawId instanceof ArrayBuffer || req.body.credential.rawId instanceof Uint8Array)) {
-        console.log('Converting rawId ArrayBuffer to base64url');
-        const uint8Array = req.body.credential.rawId instanceof Uint8Array ? 
-          req.body.credential.rawId : new Uint8Array(req.body.credential.rawId);
-        credentialIdBuffer = uint8Array;
-        credentialIdString = bufferToBase64url(uint8Array);
-      }
-      else {
-        throw new Error('Invalid credential ID format');
-      }
+try {
+  console.log('Processing credential ID...');
+  console.log('Credential ID from request:', req.body.credential.id);
+  console.log('Raw ID from request:', req.body.credential.rawId);
+
+  // Use the helper function to convert either id or rawId
+  const rawId = req.body.credential.rawId || req.body.credential.id;
+  if (!rawId) {
+    throw new Error('Credential ID is missing');
+  }
+  
+  credentialIdBuffer = convertToBuffer(rawId);
+  credentialIdString = bufferToBase64url(credentialIdBuffer);
+  
+  console.log('Final credential ID string:', credentialIdString);
+  console.log('Final credential ID buffer length:', credentialIdBuffer.length);
+
+  // Validate credential ID format
+  if (!isValidBase64url(credentialIdString)) {
+    console.error('Credential ID failed base64url validation:', credentialIdString);
+    throw new Error('Credential ID is not properly base64url encoded');
+  }
+
+  // Validate buffer length (typical credential ID is 16-32 bytes)
+  if (credentialIdBuffer.length < 16 || credentialIdBuffer.length > 1024) {
+    console.error('Credential ID has invalid length:', credentialIdBuffer.length);
+    throw new Error('Credential ID has invalid length');
+  }
+
+  console.log('Credential ID validation passed');
+} catch (conversionError) {
+  console.error('Credential ID conversion error:', conversionError);
+  return res.status(400).json({ 
+    success: false,
+    error: 'Invalid credential ID format',
+    code: 'INVALID_CREDENTIAL_ID',
+    details: conversionError.message
+  });
+}
 
       console.log('Final credential ID string:', credentialIdString);
       console.log('Final credential ID buffer length:', credentialIdBuffer.length);
@@ -1557,37 +1583,51 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
     }
 
     // Convert response data with enhanced error handling
-    try {
-      console.log('Converting response data...');
-      
-      if (!req.body.credential.response || !req.body.credential.response.clientDataJSON || !req.body.credential.response.attestationObject) {
-        throw new Error('Missing required response fields');
-      }
+    // Convert response data with enhanced error handling
+try {
+  console.log('Converting response data...');
+  
+  if (!req.body.credential.response || !req.body.credential.response.clientDataJSON || !req.body.credential.response.attestationObject) {
+    throw new Error('Missing required response fields');
+  }
 
-      // Extract the base64url strings from the credential response
-      let clientDataJSONString, attestationObjectString;
+  // Directly convert all response fields to buffers using the helper function
+  const clientDataJSONBuffer = convertToBuffer(req.body.credential.response.clientDataJSON);
+  const attestationObjectBuffer = convertToBuffer(req.body.credential.response.attestationObject);
+  
+  // Convert to base64url strings for storage/logging
+  const clientDataJSONString = bufferToBase64url(clientDataJSONBuffer);
+  const attestationObjectString = bufferToBase64url(attestationObjectBuffer);
 
-      // Handle clientDataJSON - it should be a base64url string
-      if (typeof req.body.credential.response.clientDataJSON === 'string') {
-        clientDataJSONString = req.body.credential.response.clientDataJSON;
-      } else if (req.body.credential.response.clientDataJSON instanceof ArrayBuffer || 
-                 req.body.credential.response.clientDataJSON instanceof Buffer) {
-        // If it's already a buffer, convert to base64url string first
-        clientDataJSONString = bufferToBase64url(req.body.credential.response.clientDataJSON);
-      } else {
-        throw new Error('Invalid clientDataJSON format');
-      }
+  console.log('Client data length:', clientDataJSONBuffer.length);
+  console.log('Attestation object length:', attestationObjectBuffer.length);
 
-      // Handle attestationObject - it should be a base64url string
-      if (typeof req.body.credential.response.attestationObject === 'string') {
-        attestationObjectString = req.body.credential.response.attestationObject;
-      } else if (req.body.credential.response.attestationObject instanceof ArrayBuffer || 
-                 req.body.credential.response.attestationObject instanceof Buffer) {
-        // If it's already a buffer, convert to base64url string first
-        attestationObjectString = bufferToBase64url(req.body.credential.response.attestationObject);
-      } else {
-        throw new Error('Invalid attestationObject format');
-      }
+  // Validate buffer lengths
+  if (clientDataJSONBuffer.length < 32 || clientDataJSONBuffer.length > 2048) {
+    throw new Error('Client data has invalid length');
+  }
+
+  if (attestationObjectBuffer.length < 32 || attestationObjectBuffer.length > 4096) {
+    throw new Error('Attestation object has invalid length');
+  }
+
+  // Convert expected challenge
+  const expectedChallengeBuffer = base64urlToBuffer(expectedChallenge);
+  console.log('Expected challenge converted to buffer, length:', expectedChallengeBuffer.length);
+
+  // Prepare the response object for verification
+  const response = {
+    id: credentialIdString,
+    rawId: credentialIdBuffer,
+    response: {
+      clientDataJSON: clientDataJSONBuffer,
+      attestationObject: attestationObjectBuffer
+    },
+    type: req.body.credential.type || 'public-key',
+    clientExtensionResults: req.body.credential.clientExtensionResults || {}
+  };
+
+  console.log('Credential data conversion completed');
 
       console.log('Client data string (first 20 chars):', clientDataJSONString?.substring(0, 20) + '...');
       console.log('Attestation object string (first 20 chars):', attestationObjectString?.substring(0, 20) + '...');
@@ -5304,5 +5344,6 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
