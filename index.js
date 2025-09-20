@@ -91,7 +91,12 @@ function uint8ArrayToBase64url(input) {
 // Add this function to convert base64url to buffer
 // Improved base64url to buffer conversion
 // Enhanced base64url to buffer conversion
+// Around line 100-150
 function base64urlToBuffer(base64urlString) {
+  if (!base64urlString || typeof base64urlString !== 'string') {
+    throw new Error('Invalid base64url string');
+  }
+  
   // Convert base64url to base64
   let base64 = base64urlString.replace(/-/g, '+').replace(/_/g, '/');
   
@@ -101,6 +106,17 @@ function base64urlToBuffer(base64urlString) {
   }
   
   return Buffer.from(base64, 'base64');
+}
+
+function bufferToBase64url(buffer) {
+  if (!Buffer.isBuffer(buffer)) {
+    throw new Error('Expected Buffer');
+  }
+  
+  return buffer.toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
 }
   
   // Handle string input (base64url)
@@ -1005,12 +1021,13 @@ function isValidBase64url(str) {
 }
 
 // Convert base64url string → Buffer
+// Around line 100-150
 function base64urlToBuffer(base64urlString) {
-  if (!isValidBase64url(base64urlString)) {
-    throw new Error('Invalid base64url string format');
+  if (!base64urlString || typeof base64urlString !== 'string') {
+    throw new Error('Invalid base64url string');
   }
   
-  // Convert base64url → base64
+  // Convert base64url to base64
   let base64 = base64urlString.replace(/-/g, '+').replace(/_/g, '/');
   
   // Add padding if needed
@@ -1019,6 +1036,17 @@ function base64urlToBuffer(base64urlString) {
   }
   
   return Buffer.from(base64, 'base64');
+}
+
+function bufferToBase64url(buffer) {
+  if (!Buffer.isBuffer(buffer)) {
+    throw new Error('Expected Buffer');
+  }
+  
+  return buffer.toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
 }
 
 // Convert Uint8Array → base64url
@@ -1335,61 +1363,53 @@ if (credential.type !== 'public-key') {
     }
 
     // ===== SESSION VALIDATION ===== //
-    let expectedChallenge = req.session.webauthnChallenge;
+    // Around line 1400 in verify-registration endpoint
+// At the beginning of the function
+let expectedChallenge = req.session.webauthnChallenge;
 let adminEmail = req.session.webauthnEmail;
 
-console.log('Session check - Challenge exists:', !!expectedChallenge, 'Email exists:', !!adminEmail);
-
-    // Session restoration logic
-    if (!expectedChallenge && sessionId) {
-      console.log('Attempting to restore session from store...');
-      
-      try {
-        const sessionData = await new Promise((resolve, reject) => {
-          req.sessionStore.get(sessionId, (err, session) => {
-            if (err) {
-              console.error('Session store error:', err);
-              reject(err);
-            } else {
-              resolve(session);
-            }
-          });
-        });
-        
-        if (sessionData && sessionData.webauthnChallenge && sessionData.webauthnEmail) {
-          console.log('Session restored successfully');
-          expectedChallenge = sessionData.webauthnChallenge;
-          adminEmail = sessionData.webauthnEmail;
-          
-          // Restore session data to current session
-          req.session.webauthnChallenge = sessionData.webauthnChallenge;
-          req.session.webauthnEmail = sessionData.webauthnEmail;
-          req.session.webauthnTimestamp = sessionData.webauthnTimestamp || Date.now();
-          
-          await new Promise((resolve, reject) => {
-            req.session.save((err) => {
-              if (err) {
-                console.error('Failed to save restored session:', err);
-                reject(err);
-              } else {
-                console.log('Restored session saved successfully');
-                resolve();
-              }
-            });
-          });
+// If challenge not found in current session, try to restore from store
+if (!expectedChallenge && sessionId) {
+  console.log('Attempting to restore session from store...');
+  
+  try {
+    const sessionData = await new Promise((resolve, reject) => {
+      req.sessionStore.get(sessionId, (err, session) => {
+        if (err) {
+          console.error('Session store error:', err);
+          reject(err);
         } else {
-          throw new Error('Invalid session data in store');
+          resolve(session);
         }
-      } catch (restoreError) {
-        console.error('Session restoration failed:', restoreError);
-        return res.status(400).json({ 
-          success: false,
-          error: 'Session expired or invalid',
-          code: 'SESSION_RESTORE_FAILED',
-          details: 'Please refresh the page and try again'
+      });
+    });
+    
+    if (sessionData && sessionData.webauthnChallenge && sessionData.webauthnEmail) {
+      console.log('Session restored successfully');
+      expectedChallenge = sessionData.webauthnChallenge;
+      adminEmail = sessionData.webauthnEmail;
+      
+      // Restore session data to current session
+      req.session.webauthnChallenge = sessionData.webauthnChallenge;
+      req.session.webauthnEmail = sessionData.webauthnEmail;
+      req.session.webauthnTimestamp = sessionData.webauthnTimestamp || Date.now();
+      
+      await new Promise((resolve, reject) => {
+        req.session.save((err) => {
+          if (err) {
+            console.error('Failed to save restored session:', err);
+            reject(err);
+          } else {
+            console.log('Restored session saved successfully');
+            resolve();
+          }
         });
-      }
+      });
     }
+  } catch (restoreError) {
+    console.error('Session restoration failed:', restoreError);
+  }
+}
 
     // Validate session data
     if (!expectedChallenge || !adminEmail) {
@@ -1536,27 +1556,42 @@ try {
     });
 }
 
+    // Add this around line 1535
+// Extract challenge from clientDataJSON for debugging
+const clientDataJSON = JSON.parse(clientDataJSONBuffer.toString('utf-8'));
+console.log('Client challenge:', clientDataJSON.challenge);
+console.log('Expected challenge:', expectedChallenge);
+
+// Compare challenges directly
+if (clientDataJSON.challenge !== expectedChallenge) {
+  console.error('Challenge mismatch!');
+  console.error('Client challenge length:', clientDataJSON.challenge?.length);
+  console.error('Expected challenge length:', expectedChallenge?.length);
+  throw new Error('Challenge mismatch');
+}
+
       // ===== VERIFICATION ===== //
       // ===== VERIFICATION ===== //
 console.log('Starting registration verification...');
 
 try {
-  const verification = await verifyRegistrationResponse({
+  // Around line 1540 in the verify-registration endpoint
+const verification = await verifyRegistrationResponse({
+  response: {
+    id: credentialIdString,
+    rawId: credentialIdBuffer,
     response: {
-      id: credential.id,
-      rawId: credential.rawId,
-      response: {
-        clientDataJSON: credential.response.clientDataJSON,
-        attestationObject: credential.response.attestationObject
-      },
-      type: credential.type,
-      clientExtensionResults: credential.clientExtensionResults || {}
+      clientDataJSON: clientDataJSONBuffer,
+      attestationObject: attestationObjectBuffer
     },
-    expectedChallenge: expectedChallenge,
-    expectedOrigin: origin,
-    expectedRPID: rpID,
-    requireUserVerification: true
-  });
+    type: credential.type || 'public-key',
+    clientExtensionResults: credential.clientExtensionResults || {}
+  },
+  expectedChallenge: expectedChallengeBuffer, // This should be a buffer
+  expectedOrigin: origin,
+  expectedRPID: rpID,
+  requireUserVerification: true
+});
 
   console.log('Verification completed:', {
     verified: verification.verified,
@@ -5382,6 +5417,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
