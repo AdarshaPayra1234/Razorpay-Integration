@@ -1143,16 +1143,16 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
     const options = await generateRegistrationOptions({
   rpName: 'Joker Creation Admin Panel',
   rpID,
-  userID,              // should be Uint8Array
+  userID,              // Uint8Array
   userName: admin.email,
-  excludeCredentials,  // properly converted from existing credentials
+  excludeCredentials,
   authenticatorSelection: {
     authenticatorAttachment: 'platform',
     userVerification: 'required'
   }
 });
 
-// ===== Ensure challenge is properly generated =====
+// Ensure challenge is properly generated
 if (!options.challenge || options.challenge.length === 0) {
   const crypto = require('crypto');
   options.challenge = crypto.randomBytes(32); // 32-byte random challenge
@@ -1163,17 +1163,8 @@ req.session.webauthnChallenge = uint8ArrayToBase64url(options.challenge);
 req.session.webauthnEmail = admin.email;
 req.session.webauthnTimestamp = Date.now();
 
-// Ensure session is saved
 await new Promise((resolve, reject) => {
-  req.session.save((err) => {
-    if (err) {
-      console.error('Failed to save session:', err);
-      reject(err);
-    } else {
-      console.log('Session saved successfully');
-      resolve();
-    }
-  });
+  req.session.save(err => err ? reject(err) : resolve());
 });
 
 // Convert challenge & IDs to base64url for client
@@ -1196,6 +1187,7 @@ res.json({
   ...responseOptions,
   sessionId: req.sessionID
 });
+
 
 
 } catch (err) {
@@ -5264,6 +5256,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
