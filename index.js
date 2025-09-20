@@ -1743,6 +1743,7 @@ try {
     details: process.env.NODE_ENV === 'development' ? verificationError.message : 'An unexpected error occurred'
   });
 }
+});
 
 // Verify authentication
 app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (req, res) => {
@@ -5444,6 +5445,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
