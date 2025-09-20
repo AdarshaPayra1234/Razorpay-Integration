@@ -5436,49 +5436,15 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 // Initialize admin and start server
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error('Server error:', err);
-  res.status(500).json({
-    success: false,
-    error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
-  });
-});
-
-// 404 handler for unmatched routes
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    error: 'Not found',
-    message: `Route ${req.method} ${req.path} not found`
-  });
-});
-
-// Initialize admin and start server
 initializeAdmin().then(() => {
-  const server = app.listen(PORT, () => {
+  app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
-    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`CORS origin: ${origin}`);
   });
-
-  // Graceful shutdown
-  process.on('SIGTERM', () => {
-    console.log('SIGTERM received, shutting down gracefully');
-    server.close(() => {
-      console.log('Process terminated');
-      process.exit(0);
-    });
-  });
-
 }).catch(err => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
 
-// Export for testing
-module.exports = app;
 
 
 
