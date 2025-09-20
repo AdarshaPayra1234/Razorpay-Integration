@@ -1373,9 +1373,7 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
       });
 
       // Validate credential ID
-      if (!isValidBase64url(credentialIdString)) {
-        throw new Error('Credential ID is not properly base64url encoded');
-      }
+      
 
       // Validate buffer length
       if (credentialIdBuffer.length < 16 || credentialIdBuffer.length > 1024) {
@@ -5097,6 +5095,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
