@@ -1537,31 +1537,53 @@ try {
 }
 
       // ===== VERIFICATION ===== //
-      console.log('Starting registration verification...');
+      // ===== VERIFICATION ===== //
+console.log('Starting registration verification...');
 
-      const verification = await verifyRegistrationResponse({
-        response,
-        expectedChallenge: expectedChallengeBuffer,
-        expectedOrigin: `https://${rpID}`,
-        expectedRPID: rpID,
-        requireUserVerification: true
-      });
+try {
+  const verification = await verifyRegistrationResponse({
+    response: {
+      id: credential.id,
+      rawId: credential.rawId,
+      response: {
+        clientDataJSON: credential.response.clientDataJSON,
+        attestationObject: credential.response.attestationObject
+      },
+      type: credential.type,
+      clientExtensionResults: credential.clientExtensionResults || {}
+    },
+    expectedChallenge: expectedChallenge,
+    expectedOrigin: origin,
+    expectedRPID: rpID,
+    requireUserVerification: true
+  });
 
-      console.log('Verification completed:', {
-        verified: verification.verified,
-        hasRegistrationInfo: !!verification.registrationInfo,
-        verificationError: verification.verificationError?.message
-      });
+  console.log('Verification completed:', {
+    verified: verification.verified,
+    hasRegistrationInfo: !!verification.registrationInfo,
+    verificationError: verification.verificationError?.message
+  });
 
-      if (!verification.verified || !verification.registrationInfo) {
-        console.error('Verification failed:', verification);
-        return res.status(400).json({ 
-          success: false,
-          error: 'Registration verification failed',
-          code: 'VERIFICATION_FAILED',
-          details: verification.verificationError?.message || 'Unknown verification error'
-        });
-      }
+  if (!verification.verified || !verification.registrationInfo) {
+    console.error('Verification failed:', verification);
+    return res.status(400).json({ 
+      success: false,
+      error: 'Registration verification failed',
+      code: 'VERIFICATION_FAILED',
+      details: verification.verificationError?.message || 'Unknown verification error'
+    });
+  }
+
+  // Continue with the rest of your verification logic...
+} catch (verificationError) {
+  console.error('Verification error:', verificationError);
+  return res.status(400).json({ 
+    success: false,
+    error: 'Verification process failed',
+    code: 'VERIFICATION_PROCESS_ERROR',
+    details: verificationError.message
+  });
+}
 
       // ===== CREDENTIAL STORAGE ===== //
       const { credentialPublicKey, credentialID, counter } = verification.registrationInfo;
@@ -5360,6 +5382,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
