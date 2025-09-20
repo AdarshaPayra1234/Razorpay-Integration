@@ -1643,7 +1643,7 @@ try {
         code: 'VERIFICATION_PROCESS_ERROR',
         details: verificationError.message
       });
-    }
+    
 
   } catch (err) {
     console.error('❌ CRITICAL ERROR in verification:', err);
@@ -5370,6 +5370,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
