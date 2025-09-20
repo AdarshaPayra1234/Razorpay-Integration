@@ -1141,19 +1141,20 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
 
     // Generate registration options
     const options = await generateRegistrationOptions({
-      rpName: 'Joker Creation Admin Panel',
-      rpID,
-      userID,
-      userName: admin.email,
-      excludeCredentials,
-      authenticatorSelection: {
-        authenticatorAttachment: 'platform',
-        userVerification: 'required'
-      }
-    });
+  rpName: 'Joker Creation Admin Panel',
+  rpID,
+  userID,              // should be Uint8Array
+  userName: admin.email,
+  excludeCredentials,  // properly converted from existing credentials
+  authenticatorSelection: {
+    authenticatorAttachment: 'platform',
+    userVerification: 'required'
+  }
+});
 
-    // Store the challenge in session
-    req.session.webauthnChallenge = uint8ArrayToBase64url(options.challenge);
+// Store challenge in session
+req.session.webauthnChallenge = uint8ArrayToBase64url(options.challenge);
+
 
     req.session.webauthnEmail = admin.email;
     req.session.webauthnTimestamp = Date.now();
@@ -1173,33 +1174,35 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
 
     // Convert challenge & IDs to base64url for client
     const responseOptions = {
-      ...options,
-      challenge: uint8ArrayToBase64url(options.challenge),
-      user: {
-        id: uint8ArrayToBase64url(options.user.id),
-        name: options.user.name,
-        displayName: options.user.displayName
-      },
-      excludeCredentials: options.excludeCredentials.map(cred => ({
-        id: uint8ArrayToBase64url(cred.id),
-        type: cred.type
-      }))
-    };
+  ...options,
+  challenge: uint8ArrayToBase64url(options.challenge),
+  user: {
+    id: uint8ArrayToBase64url(options.user.id),
+    name: options.user.name,
+    displayName: options.user.displayName
+  },
+  excludeCredentials: options.excludeCredentials.map(cred => ({
+    id: uint8ArrayToBase64url(cred.id),
+    type: cred.type,
+    transports: cred.transports || [] // ensure transports are included if available
+  }))
+};
 
-    res.json({
-      ...responseOptions,
-      sessionId: req.sessionID
-    });
-    
-  } catch (err) {
-    console.error('Error generating registration options:', err);
-    res.status(500).json({ 
-      error: 'Failed to generate registration options',
-      code: 'GENERATION_FAILED',
-      details: err.message 
-    });
-  }
+res.json({
+  ...responseOptions,
+  sessionId: req.sessionID
 });
+
+} catch (err) {
+  console.error('Error generating registration options:', err);
+  res.status(500).json({ 
+    error: 'Failed to generate registration options',
+    code: 'GENERATION_FAILED',
+    details: err.message 
+  });
+}
+});
+
 
 // ===== Debug Routes ===== //
 
@@ -5256,6 +5259,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
