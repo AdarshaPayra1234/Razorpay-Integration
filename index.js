@@ -1625,25 +1625,15 @@ try {
       // ===== SUCCESS RESPONSE ===== //
       console.log('=== WEB AUTHN REGISTRATION COMPLETED SUCCESSFULLY ===');
 
-      res.json({ 
-        success: true,
-        message: 'Security key registered successfully',
-        credential: {
-          deviceName: newCredential.deviceName,
-          deviceType: newCredential.deviceType,
-          addedAt: newCredential.addedAt.toISOString()
-        }
-      });
-
-    } catch (verificationError) {
-      console.error('Verification process error:', verificationError);
-      return res.status(400).json({ 
-        success: false,
-        error: 'Verification process failed',
-        code: 'VERIFICATION_PROCESS_ERROR',
-        details: verificationError.message
-      });
-    
+    res.json({ 
+      success: true,
+      message: 'Security key registered successfully',
+      credential: {
+        deviceName: newCredential.deviceName,
+        deviceType: newCredential.deviceType,
+        addedAt: newCredential.addedAt.toISOString()
+      }
+    });
 
   } catch (err) {
     console.error('❌ CRITICAL ERROR in verification:', err);
@@ -5370,6 +5360,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
