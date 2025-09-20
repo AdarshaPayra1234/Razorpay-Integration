@@ -1153,7 +1153,8 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
     });
 
     // Store the challenge in session
-    req.session.webauthnChallenge = options.challenge;
+    req.session.webauthnChallenge = uint8ArrayToBase64url(options.challenge);
+
     req.session.webauthnEmail = admin.email;
     req.session.webauthnTimestamp = Date.now();
 
@@ -1265,7 +1266,8 @@ app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimi
     });
 
     // Store the challenge and email in the session
-    req.session.webauthnChallenge = options.challenge;
+    req.session.webauthnChallenge = uint8ArrayToBase64url(options.challenge);
+
     req.session.webauthnEmail = email;
 
     // Ensure session is saved
@@ -1308,13 +1310,13 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
 
     // ===== INPUT VALIDATION ===== //
     if (!credential || !credential.id || !credential.response) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Invalid credential data structure',
-        code: 'INVALID_CREDENTIAL_STRUCTURE',
-        details: 'Credential object must contain id and response fields'
-      });
-    }
+  return res.status(400).json({ 
+    success: false,
+    error: 'Invalid credential data structure',
+    code: 'INVALID_CREDENTIAL_STRUCTURE'
+  });
+}
+
 
     // Validate base64url encoding for all required fields
     const requiredFields = [
@@ -1482,11 +1484,11 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
       }
 
       console.log('Credential ID validation:', {
-        id: credentialIdString,
-        isValid: isValidBase64url(credentialIdString),
-        length: credentialIdString.length,
-        expectedLength: 43
-      });
+  id: credentialIdString,
+  isValid: isValidBase64url(credentialIdString),
+  length: credentialIdString.length
+});
+
 
       console.log('Raw ID validation:', {
         rawId: credential.rawId,
@@ -1554,9 +1556,26 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
     }
 
     // Extract challenge from clientDataJSON for debugging
-    const clientDataJSON = JSON.parse(credential.response.clientDataJSON);
-    console.log('Client challenge:', clientDataJSON.challenge);
-    console.log('Expected challenge:', expectedChallenge);
+    // Convert clientDataJSON from base64url to JSON object
+const clientDataJSONBuffer = base64urlToBuffer(credential.response.clientDataJSON);
+const clientDataJSONString = clientDataJSONBuffer.toString('utf-8');
+
+let clientDataJSON;
+try {
+  clientDataJSON = JSON.parse(clientDataJSONString);
+} catch (parseError) {
+  console.error('Failed to parse clientDataJSON:', parseError);
+  return res.status(400).json({
+    success: false,
+    error: 'Invalid clientDataJSON',
+    code: 'CLIENT_DATA_JSON_PARSE_ERROR',
+    details: parseError.message
+  });
+}
+
+console.log('Client challenge:', clientDataJSON.challenge);
+console.log('Expected challenge:', expectedChallenge);
+
 
     // Compare challenges directly
     if (clientDataJSON.challenge !== expectedChallenge) {
@@ -1734,12 +1753,13 @@ app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (
 
     // ===== INPUT VALIDATION ===== //
     if (!credential || !credential.id || !credential.response) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Invalid credential data structure',
-        code: 'INVALID_CREDENTIAL_STRUCTURE'
-      });
-    }
+  return res.status(400).json({ 
+    success: false,
+    error: 'Invalid credential data structure',
+    code: 'INVALID_CREDENTIAL_STRUCTURE'
+  });
+}
+
 
     // Validate base64url encoding for all required fields
     const requiredAuthFields = [
@@ -5416,14 +5436,50 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 // Initialize admin and start server
-initializeAdmin().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Server error:', err);
+  res.status(500).json({
+    success: false,
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
   });
+});
+
+// 404 handler for unmatched routes
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Not found',
+    message: `Route ${req.method} ${req.path} not found`
+  });
+});
+
+// Initialize admin and start server
+initializeAdmin().then(() => {
+  const server = app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`CORS origin: ${origin}`);
+  });
+
+  // Graceful shutdown
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM received, shutting down gracefully');
+    server.close(() => {
+      console.log('Process terminated');
+      process.exit(0);
+    });
+  });
+
 }).catch(err => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
+// Export for testing
+module.exports = app;
+
 
 
 
