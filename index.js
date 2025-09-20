@@ -1152,28 +1152,32 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
   }
 });
 
+// ===== Ensure challenge is properly generated =====
+if (!options.challenge || options.challenge.length === 0) {
+  const crypto = require('crypto');
+  options.challenge = crypto.randomBytes(32); // 32-byte random challenge
+}
+
 // Store challenge in session
 req.session.webauthnChallenge = uint8ArrayToBase64url(options.challenge);
+req.session.webauthnEmail = admin.email;
+req.session.webauthnTimestamp = Date.now();
 
+// Ensure session is saved
+await new Promise((resolve, reject) => {
+  req.session.save((err) => {
+    if (err) {
+      console.error('Failed to save session:', err);
+      reject(err);
+    } else {
+      console.log('Session saved successfully');
+      resolve();
+    }
+  });
+});
 
-    req.session.webauthnEmail = admin.email;
-    req.session.webauthnTimestamp = Date.now();
-
-    // Ensure session is saved
-    await new Promise((resolve, reject) => {
-      req.session.save((err) => {
-        if (err) {
-          console.error('Failed to save session:', err);
-          reject(err);
-        } else {
-          console.log('Session saved successfully');
-          resolve();
-        }
-      });
-    });
-
-    // Convert challenge & IDs to base64url for client
-    const responseOptions = {
+// Convert challenge & IDs to base64url for client
+const responseOptions = {
   ...options,
   challenge: uint8ArrayToBase64url(options.challenge),
   user: {
@@ -1184,7 +1188,7 @@ req.session.webauthnChallenge = uint8ArrayToBase64url(options.challenge);
   excludeCredentials: options.excludeCredentials.map(cred => ({
     id: uint8ArrayToBase64url(cred.id),
     type: cred.type,
-    transports: cred.transports || [] // ensure transports are included if available
+    transports: cred.transports || []
   }))
 };
 
@@ -1192,6 +1196,7 @@ res.json({
   ...responseOptions,
   sessionId: req.sessionID
 });
+
 
 } catch (err) {
   console.error('Error generating registration options:', err);
@@ -5259,6 +5264,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
