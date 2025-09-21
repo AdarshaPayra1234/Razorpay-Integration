@@ -124,6 +124,28 @@ function isValidBase64url(str) {
   return base64urlRegex.test(str) && str.length % 4 !== 1;
 }
 
+// ===== BOOKINGS BACKEND JWT FUNCTIONS =====
+const generateBookingsToken = (admin) => {
+  return jwt.sign(
+    { 
+      email: admin.email, 
+      role: 'admin',
+      authType: 'bookings_backend',
+      timestamp: Date.now()
+    },
+    process.env.BOOKINGS_JWT_SECRET,
+    { expiresIn: '8h' }
+  );
+};
+
+const verifyBookingsToken = (token) => {
+  return jwt.verify(token, process.env.BOOKINGS_JWT_SECRET);
+};
+
+const verifyUsersBackendToken = (token) => {
+  return jwt.verify(token, process.env.USERS_BACKEND_JWT_SECRET);
+};
+
 const app = express();
 
 // FIX: Enable trust proxy for proper rate limiting behind reverse proxy
@@ -551,6 +573,7 @@ const checkIPBlacklist = (req, res, next) => {
 // ==================== MIDDLEWARE ====================
 
 // Admin Authentication Middleware - UPDATED VERSION
+// Admin Authentication Middleware - REPLACE THIS ENTIRE FUNCTION
 const authenticateAdmin = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
@@ -589,7 +612,8 @@ const authenticateAdmin = async (req, res, next) => {
       console.log('Token received:', token.substring(0, 20) + '...');
       console.log('Token length:', token.length);
       
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      // FIRST try to verify with bookings JWT secret
+      const decoded = jwt.verify(token, process.env.BOOKINGS_JWT_SECRET);
       
       // Additional validation for required fields
       if (!decoded.email || !decoded.role) {
@@ -609,66 +633,73 @@ const authenticateAdmin = async (req, res, next) => {
         });
       }
       
-      // Find the full admin document with credentials
-      const admin = await Admin.findOne({ email: decoded.email });
-      if (!admin) {
-        console.log('Admin not found for email:', decoded.email);
+      console.log('✅ Verified with BOOKINGS_JWT_SECRET');
+      
+    } catch (bookingsError) {
+      // If bookings token verification fails, try with users backend secret
+      console.log('Bookings token verification failed, trying users backend secret...');
+      
+      const decoded = jwt.verify(token, process.env.USERS_BACKEND_JWT_SECRET);
+      
+      if (!decoded.email || decoded.role !== 'admin') {
+        console.log('Invalid users backend token payload:', decoded);
         return res.status(401).json({ 
-          error: 'Admin account not found',
-          code: 'ADMIN_NOT_FOUND'
+          error: 'Invalid admin token from users backend',
+          code: 'INVALID_ADMIN_TOKEN'
         });
       }
       
-      req.admin = admin;
-      console.log('Admin authenticated successfully:', decoded.email);
-      return next();
-      
-    } catch (tokenError) {
-      console.error('Token verification error:', {
-        name: tokenError.name,
-        message: tokenError.message,
-        expiredAt: tokenError.expiredAt
-      });
-      
-      if (tokenError.name === 'TokenExpiredError') {
-        return res.status(401).json({ 
-          error: 'Token expired',
-          code: 'TOKEN_EXPIRED'
-        });
-      }
-      
-      if (tokenError.name === 'JsonWebTokenError') {
-        // More specific error messages for JWT issues
-        let errorDetails = 'Invalid token';
-        if (tokenError.message.includes('jwt malformed')) {
-          errorDetails = 'Token structure is malformed or corrupted';
-        } else if (tokenError.message.includes('invalid signature')) {
-          errorDetails = 'Token signature verification failed';
-        } else if (tokenError.message.includes('jwt must be provided')) {
-          errorDetails = 'No token provided';
-        }
-        
-        return res.status(401).json({ 
-          error: errorDetails,
-          code: 'INVALID_TOKEN',
-          details: tokenError.message
-        });
-      }
-      
-      // For other unexpected errors
-      console.error('Unexpected token error:', tokenError);
+      console.log('✅ Verified with USERS_BACKEND_JWT_SECRET');
+    }
+    
+    // Find the full admin document with credentials
+    const admin = await Admin.findOne({ email: decoded.email });
+    if (!admin) {
+      console.log('Admin not found for email:', decoded.email);
       return res.status(401).json({ 
-        error: 'Authentication failed',
-        code: 'AUTH_FAILED',
-        details: tokenError.message
+        error: 'Admin account not found',
+        code: 'ADMIN_NOT_FOUND'
       });
     }
+    
+    req.admin = admin;
+    console.log('Admin authenticated successfully:', decoded.email);
+    return next();
+    
   } catch (err) {
-    console.error('Admin authentication middleware error:', err);
-    return res.status(500).json({ 
-      error: 'Internal server error during authentication',
-      code: 'SERVER_ERROR',
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    console.error('Admin authentication error:', err);
+    
+    if (err.name === 'TokenExpiredError') {
+      return res.status(401).json({ 
+        error: 'Token expired',
+        code: 'TOKEN_EXPIRED'
+      });
+    }
+    
+    if (err.name === 'JsonWebTokenError') {
+      // More specific error messages for JWT issues
+      let errorDetails = 'Invalid token';
+      if (err.message.includes('jwt malformed')) {
+        errorDetails = 'Token structure is malformed or corrupted';
+      } else if (err.message.includes('invalid signature')) {
+        errorDetails = 'Token signature verification failed';
+      } else if (err.message.includes('jwt must be provided')) {
+        errorDetails = 'No token provided';
+      }
+      
+      return res.status(401).json({ 
+        error: errorDetails,
+        code: 'INVALID_TOKEN',
+        details: err.message
+      });
+    }
+    
+    // For other unexpected errors
+    console.error('Unexpected token error:', err);
+    return res.status(401).json({ 
+      error: 'Authentication failed',
+      code: 'AUTH_FAILED',
+      details: err.message
     });
   }
 };
@@ -1318,6 +1349,8 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
   try {
     const { credential, deviceName } = req.body;
 
+    console.log('=== WEB AUTHN VERIFICATION STARTED ===');
+
     // Get challenge from session
     const expectedChallenge = req.session.webauthnChallenge;
     const adminEmail = req.session.webauthnEmail;
@@ -1373,7 +1406,7 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
     // Save credential
     const { credentialPublicKey, credentialID, counter } = verification.registrationInfo;
     
-    admin.webauthnCredentials.push({
+    req.admin.webauthnCredentials.push({
       credentialID: bufferToBase64url(credentialID),
       credentialPublicKey: bufferToBase64url(credentialPublicKey),
       counter,
@@ -1382,8 +1415,11 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
       addedAt: new Date()
     });
 
-    await admin.save();
+    await req.admin.save();
 
+    // Generate bookings-specific JWT token
+    const bookingsToken = generateBookingsToken(req.admin);
+    
     // Clear session
     req.session.webauthnChallenge = null;
     req.session.webauthnEmail = null;
@@ -1391,7 +1427,9 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
 
     res.json({ 
       success: true, 
-      message: 'Security key registered successfully' 
+      message: 'Security key registered successfully',
+      token: bookingsToken, // Return bookings backend token
+      tokenType: 'bookings_backend'
     });
 
   } catch (err) {
@@ -1564,22 +1602,19 @@ app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (
     storedCredential.counter = verification.authenticationInfo.newCounter;
     await admin.save();
 
+    // Generate bookings-specific JWT token
+    const bookingsToken = generateBookingsToken(admin);
+
     // Clear session
     req.session.webauthnChallenge = null;
     req.session.webauthnEmail = null;
     await req.session.save();
 
-    // Generate JWT token
-    const token = jwt.sign(
-      { email: admin.email, role: 'admin' },
-      process.env.JWT_SECRET,
-      { expiresIn: '8h' }
-    );
-
     res.json({ 
       success: true,
       message: 'Authentication successful',
-      token
+      token: bookingsToken, // Return bookings backend token
+      tokenType: 'bookings_backend'
     });
 
   } catch (err) {
@@ -1770,26 +1805,37 @@ app.post('/api/admin/webauthn/check-credentials', authenticateAdmin, async (req,
 });
 
 // Add this endpoint to your bookings backend
+// Replace the existing endpoint with this fixed version
+// WebAuthn check credentials - REPLACE THIS ENTIRE ENDPOINT
 app.post('/api/admin/webauthn/check-credentials-with-users-token', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ 
-        error: 'Invalid authorization format',
-        code: 'INVALID_AUTH_FORMAT'
+        error: 'Authorization header missing or invalid',
+        code: 'INVALID_AUTH_HEADER'
       });
     }
 
     const usersToken = authHeader.split(' ')[1];
     
-    // Verify using the SAME secret as users backend
-    const decoded = jwt.verify(usersToken, process.env.JWT_SECRET);
+    if (!usersToken) {
+      return res.status(401).json({ 
+        error: 'Token missing',
+        code: 'TOKEN_MISSING'
+      });
+    }
+
+    console.log('Checking WebAuthn credentials with users token:', usersToken.substring(0, 20) + '...');
+
+    // Verify using users backend JWT secret only
+    const decoded = jwt.verify(usersToken, process.env.USERS_BACKEND_JWT_SECRET);
     
     if (!decoded.email || decoded.role !== 'admin') {
       return res.status(401).json({ 
-        error: 'Invalid token',
-        code: 'INVALID_TOKEN'
+        error: 'Invalid token payload - admin role required',
+        code: 'INVALID_ADMIN_TOKEN'
       });
     }
     
@@ -1797,7 +1843,7 @@ app.post('/api/admin/webauthn/check-credentials-with-users-token', async (req, r
     const admin = await Admin.findOne({ email: decoded.email });
     if (!admin) {
       return res.status(404).json({ 
-        error: 'Admin not found',
+        error: 'Admin not found in bookings system',
         code: 'ADMIN_NOT_FOUND'
       });
     }
@@ -1806,10 +1852,13 @@ app.post('/api/admin/webauthn/check-credentials-with-users-token', async (req, r
     
     res.json({
       success: true,
-      hasWebAuthn
+      hasWebAuthn,
+      email: decoded.email,
+      authSystem: 'users_backend' // Indicate which auth system was used
     });
   } catch (err) {
-    console.error('Error checking WebAuthn credentials with users token:', err);
+    console.error('Error checking WebAuthn credentials:', err);
+    
     let statusCode = 500;
     let errorCode = 'CHECK_FAILED';
     let errorMessage = 'Failed to check credentials';
@@ -1821,7 +1870,7 @@ app.post('/api/admin/webauthn/check-credentials-with-users-token', async (req, r
     } else if (err.name === 'JsonWebTokenError') {
       statusCode = 401;
       errorCode = 'INVALID_TOKEN';
-      errorMessage = 'Invalid token';
+      errorMessage = 'Invalid token signature';
     }
 
     res.status(statusCode).json({ 
@@ -5258,5 +5307,6 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
