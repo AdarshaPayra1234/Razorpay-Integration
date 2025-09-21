@@ -1266,7 +1266,8 @@ app.get('/api/debug/session-info', authenticateAdmin, async (req, res) => {
 
 
 // Generate authentication options
-app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimit, async (req, res) => {
+// Generate authentication options - UPDATED VERSION (email-based)
+app.post('/api/admin/webauthn/generate-authentication-options', async (req, res) => {
   try {
     const { email } = req.body;
     
@@ -1300,7 +1301,6 @@ app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimi
 
     // Store the challenge and email in the session
     req.session.webauthnChallenge = uint8ArrayToBase64url(options.challenge);
-
     req.session.webauthnEmail = email;
 
     // Ensure session is saved
@@ -1434,54 +1434,28 @@ app.get('/api/debug/session', authenticateAdmin, (req, res) => {
 
 
 // Verify authentication
-app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (req, res) => {
+app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
   try {
-    const { credential } = req.body;
+    const { credential, email } = req.body;
     
     console.log('=== WEB AUTHN AUTHENTICATION VERIFICATION STARTED ===');
 
-    // ===== INPUT VALIDATION ===== //
+    // ===== INPUT VALIDATION =====
     if (!credential || !credential.id || !credential.response) {
-  return res.status(400).json({ 
-    success: false,
-    error: 'Invalid credential data structure',
-    code: 'INVALID_CREDENTIAL_STRUCTURE'
-  });
-}
-
-
-    // Validate base64url encoding for all required fields
-    const requiredAuthFields = [
-      { field: credential.id, name: 'credential.id' },
-      { field: credential.rawId, name: 'credential.rawId' },
-      { field: credential.response.clientDataJSON, name: 'credential.response.clientDataJSON' },
-      { field: credential.response.authenticatorData, name: 'credential.response.authenticatorData' },
-      { field: credential.response.signature, name: 'credential.response.signature' }
-    ];
-
-    for (const { field, name } of requiredAuthFields) {
-      if (!field) {
-        return res.status(400).json({ 
-          success: false,
-          error: `Missing required field: ${name}`,
-          code: 'MISSING_REQUIRED_FIELD'
-        });
-      }
-      
-      if (!isValidBase64url(field)) {
-        return res.status(400).json({ 
-          success: false,
-          error: `Invalid base64url encoding for ${name}`,
-          code: 'INVALID_BASE64URL_ENCODING',
-          field: name
-        });
-      }
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid credential data structure',
+        code: 'INVALID_CREDENTIAL_STRUCTURE'
+      });
     }
 
-    // ===== SESSION VALIDATION ===== //
+    // ===== SESSION VALIDATION =====
     const expectedChallenge = req.session.webauthnChallenge;
-    const adminEmail = req.session.webauthnEmail;
+    const sessionEmail = req.session.webauthnEmail;
 
+    // Use email from session or from request body
+    const adminEmail = sessionEmail || email;
+    
     if (!expectedChallenge || !adminEmail) {
       return res.status(400).json({ 
         success: false,
@@ -1500,7 +1474,7 @@ app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (
       });
     }
 
-    // ===== ADMIN VALIDATION ===== //
+    // ===== ADMIN VALIDATION =====
     const admin = await Admin.findOne({ email: adminEmail });
     if (!admin) {
       return res.status(404).json({ 
@@ -1570,6 +1544,7 @@ app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (
     await req.session.save();
 
     // Generate JWT token
+     // Generate JWT token
     const token = jwt.sign(
       { email: admin.email, role: 'admin' },
       process.env.JWT_SECRET,
@@ -1769,39 +1744,21 @@ app.post('/api/admin/webauthn/check-credentials', authenticateAdmin, async (req,
   }
 });
 
-// Add this endpoint to your bookings backend
-app.post('/api/admin/webauthn/check-credentials-with-users-token', async (req, res) => {
+
+// ===== NEW ENDPOINT: Check WebAuthn credentials by email =====
+app.post('/api/admin/webauthn/check-credentials-by-email', async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
+    const { email } = req.body;
     
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ 
-        error: 'Invalid authorization format',
-        code: 'INVALID_AUTH_FORMAT'
-      });
-    }
-
-    const usersToken = authHeader.split(' ')[1];
-    
-    if (!usersToken) {
-      return res.status(401).json({ 
-        error: 'Token missing',
-        code: 'TOKEN_MISSING'
-      });
-    }
-
-    // Verify the token using the same secret as the users backend
-    const decoded = jwt.verify(usersToken, process.env.JWT_SECRET);
-    
-    if (!decoded.email || decoded.role !== 'admin') {
-      return res.status(401).json({ 
-        error: 'Invalid token',
-        code: 'INVALID_TOKEN'
+    if (!email) {
+      return res.status(400).json({ 
+        error: 'Email is required',
+        code: 'EMAIL_REQUIRED'
       });
     }
     
-    // Find the admin in the bookings database
-    const admin = await Admin.findOne({ email: decoded.email });
+    // Find the admin by email
+    const admin = await Admin.findOne({ email });
     if (!admin) {
       return res.status(404).json({ 
         error: 'Admin not found',
@@ -1816,24 +1773,10 @@ app.post('/api/admin/webauthn/check-credentials-with-users-token', async (req, r
       hasWebAuthn
     });
   } catch (err) {
-    console.error('Error checking WebAuthn credentials with users token:', err);
-    let statusCode = 500;
-    let errorCode = 'CHECK_FAILED';
-    let errorMessage = 'Failed to check credentials';
-
-    if (err.name === 'TokenExpiredError') {
-      statusCode = 401;
-      errorCode = 'TOKEN_EXPIRED';
-      errorMessage = 'Token has expired';
-    } else if (err.name === 'JsonWebTokenError') {
-      statusCode = 401;
-      errorCode = 'INVALID_TOKEN';
-      errorMessage = 'Invalid token';
-    }
-
-    res.status(statusCode).json({ 
-      error: errorMessage,
-      code: errorCode,
+    console.error('Error checking WebAuthn credentials by email:', err);
+    res.status(500).json({ 
+      error: 'Failed to check credentials',
+      code: 'CHECK_FAILED',
       details: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
   }
@@ -5225,4 +5168,5 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
