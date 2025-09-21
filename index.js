@@ -862,11 +862,13 @@ app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) =
     
     // Generate JWT token
     // In users backend login route
+// Generate JWT token
 const token = jwt.sign(
-  { email: user., role: 'admin' },
+  { email: admin.email, role: 'admin' },
   process.env.JWT_SECRET,  // Same secret as bookings backend
   { expiresIn: '8h' }
 );
+
     
     res.json({ 
       success: true, 
@@ -5241,6 +5243,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
