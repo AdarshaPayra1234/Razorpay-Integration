@@ -189,9 +189,10 @@ app.use(cookieParser());
 // Session middleware configuration for production
 // Enhanced session configuration
 // Enhanced session configuration - Replace existing session config
+// Enhanced session configuration
 app.use(session({
   secret: process.env.SESSION_SECRET || 'your-webauthn-session-secret-key',
-  resave: false,
+  resave: true, // Changed to true for WebAuthn
   saveUninitialized: false,
   cookie: {
     secure: process.env.NODE_ENV === 'production',
@@ -1317,19 +1318,20 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
   try {
     const { credential, deviceName } = req.body;
 
-    console.log('=== WEB AUTHN VERIFICATION STARTED ===');
-
-    // Session validation
+    // Get challenge from session
     const expectedChallenge = req.session.webauthnChallenge;
     const adminEmail = req.session.webauthnEmail;
 
-    if (!expectedChallenge || !adminEmail) {
+    if (!expectedChallenge) {
       return res.status(400).json({ 
         success: false,
         error: 'Authentication session expired',
         code: 'SESSION_EXPIRED'
       });
     }
+
+    // Convert base64url challenge back to buffer
+    const challengeBuffer = base64urlToBuffer(expectedChallenge);
 
     // Find admin
     const admin = await Admin.findOne({ email: adminEmail });
@@ -1412,6 +1414,24 @@ app.get('/api/debug/session', authenticateAdmin, (req, res) => {
   });
 });
 
+// Debug endpoint to check session state
+app.get('/api/debug/session-state', authenticateAdmin, (req, res) => {
+  res.json({
+    sessionId: req.sessionID,
+    webauthnChallenge: req.session.webauthnChallenge,
+    webauthnEmail: req.session.webauthnEmail,
+    sessionKeys: Object.keys(req.session)
+  });
+});
+
+// Debug endpoint to check JWT configuration
+app.get('/api/debug/jwt-config', (req, res) => {
+  res.json({
+    hasJwtSecret: !!process.env.JWT_SECRET,
+    secretLength: process.env.JWT_SECRET ? process.env.JWT_SECRET.length : 0,
+    environment: process.env.NODE_ENV
+  });
+});
 
 // Verify authentication
 app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (req, res) => {
@@ -1763,14 +1783,7 @@ app.post('/api/admin/webauthn/check-credentials-with-users-token', async (req, r
 
     const usersToken = authHeader.split(' ')[1];
     
-    if (!usersToken) {
-      return res.status(401).json({ 
-        error: 'Token missing',
-        code: 'TOKEN_MISSING'
-      });
-    }
-
-    // Verify the token using the same secret as the users backend
+    // Verify using the SAME secret as users backend
     const decoded = jwt.verify(usersToken, process.env.JWT_SECRET);
     
     if (!decoded.email || decoded.role !== 'admin') {
@@ -5245,4 +5258,5 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
