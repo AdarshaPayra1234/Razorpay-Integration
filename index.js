@@ -225,6 +225,7 @@ app.use(cookieParser());
 // Session middleware configuration for production
 // Enhanced session configuration
 // Enhanced session configuration - Replace existing session config
+// Replace your existing session configuration with this enhanced version
 app.use(session({
   secret: process.env.SESSION_SECRET || 'your-webauthn-session-secret-key',
   resave: false,
@@ -244,7 +245,8 @@ app.use(session({
   }),
   name: 'webauthn.sid',
   rolling: true,
-  proxy: true
+  proxy: true,
+  touchAfter: 24 * 3600 // Reduce session writes
 }));
 
 // Add session debugging middleware
@@ -254,7 +256,8 @@ app.use((req, res, next) => {
     hasChallenge: !!req.session.webauthnChallenge,
     challenge: req.session.webauthnChallenge ? 
       req.session.webauthnChallenge.substring(0, 20) + '...' : null,
-    hasEmail: !!req.session.webauthnEmail
+    hasEmail: !!req.session.webauthnEmail,
+    sessionKeys: Object.keys(req.session)
   });
   next();
 });
@@ -1110,6 +1113,12 @@ function bufferToBase64url(buffer) {
     .replace(/=/g, '');
 }
 
+function isValidBase64url(str) {
+  if (typeof str !== 'string') return false;
+  const base64urlRegex = /^[A-Za-z0-9_-]+$/;
+  return base64urlRegex.test(str) && str.length % 4 !== 1;
+}
+
 // Convert Uint8Array → base64url
 function uint8ArrayToBase64url(uint8Array) {
   if (!uint8Array) {
@@ -1206,20 +1215,33 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
       timeout: 60000
     });
 
-    // Store challenge in session
-    req.session.webauthnChallenge = bufferToBase64url(Buffer.from(options.challenge));
+    // Store challenge in session with proper encoding
+    const challengeBuffer = Buffer.from(options.challenge);
+    const challengeBase64 = challengeBuffer.toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+
+    req.session.webauthnChallenge = challengeBase64;
     req.session.webauthnEmail = admin.email;
     req.session.webauthnTimestamp = Date.now();
 
+    // Ensure session is saved before responding
     await new Promise((resolve, reject) => {
-      req.session.save(err => err ? reject(err) : resolve());
+      req.session.save((err) => {
+        if (err) {
+          console.error('Failed to save session:', err);
+          reject(err);
+        } else {
+          console.log('Session saved successfully with challenge:', challengeBase64.substring(0, 20) + '...');
+          resolve();
+        }
+      });
     });
-
-    console.log('Session saved with challenge');
 
     res.json({
       ...options,
-      challenge: bufferToBase64url(Buffer.from(options.challenge)),
+      challenge: challengeBase64,
       user: {
         ...options.user,
         id: bufferToBase64url(options.user.id)
@@ -1342,19 +1364,77 @@ app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimi
 // Verify registration
 app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnRateLimit, async (req, res) => {
   try {
-    const { credential, deviceName } = req.body;
+    const { credential, deviceName, sessionId } = req.body;
 
     console.log('=== WEB AUTHN VERIFICATION STARTED ===');
+    console.log('Session ID from request:', sessionId);
+    console.log('Session ID from session:', req.sessionID);
 
-    // Session validation
-    const expectedChallenge = req.session.webauthnChallenge;
-    const adminEmail = req.session.webauthnEmail;
+    // Try to get challenge from session first
+    let expectedChallenge = req.session.webauthnChallenge;
+    let adminEmail = req.session.webauthnEmail;
 
+    console.log('Expected challenge from session:', expectedChallenge ? expectedChallenge.substring(0, 20) + '...' : 'NULL');
+    console.log('Admin email from session:', adminEmail);
+
+    // If challenge not found in current session, try to restore from provided sessionId
+    if (!expectedChallenge && sessionId) {
+      console.log('Challenge not found in current session, attempting to restore from sessionId');
+      
+      try {
+        const MongoStore = require('connect-mongo')(session);
+        const store = MongoStore.create({
+          mongoUrl: process.env.MONGODB_URI,
+          collectionName: 'webauthn_sessions'
+        });
+
+        const sessionData = await new Promise((resolve, reject) => {
+          store.get(sessionId, (err, session) => {
+            if (err) {
+              console.error('Failed to get session from store:', err);
+              resolve(null);
+            } else {
+              resolve(session);
+            }
+          });
+        });
+
+        if (sessionData && sessionData.webauthnChallenge) {
+          console.log('Session restored successfully from store');
+          expectedChallenge = sessionData.webauthnChallenge;
+          adminEmail = sessionData.webauthnEmail;
+          
+          // Restore session data
+          req.session.webauthnChallenge = sessionData.webauthnChallenge;
+          req.session.webauthnEmail = sessionData.webauthnEmail;
+          req.session.webauthnTimestamp = sessionData.webauthnTimestamp;
+          
+          // Save the restored session
+          await new Promise((resolve, reject) => {
+            req.session.save((err) => {
+              if (err) reject(err);
+              else resolve();
+            });
+          });
+        }
+      } catch (restoreError) {
+        console.error('Session restoration error:', restoreError);
+      }
+    }
+
+    // Final validation of session data
     if (!expectedChallenge || !adminEmail) {
       return res.status(400).json({ 
         success: false,
-        error: 'Authentication session expired',
-        code: 'SESSION_EXPIRED'
+        error: 'Authentication session expired or not found',
+        code: 'SESSION_EXPIRED',
+        details: {
+          hasExpectedChallenge: !!expectedChallenge,
+          hasAdminEmail: !!adminEmail,
+          sessionId: sessionId,
+          sessionKeys: Object.keys(req.session || {}),
+          providedSessionId: !!sessionId
+        }
       });
     }
 
@@ -1368,30 +1448,39 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
       });
     }
 
+    // Convert expected challenge back to buffer for verification
+    const expectedChallengeBuffer = base64urlToBuffer(expectedChallenge);
+    
+    // Prepare credential data for verification
+    const credentialData = {
+      id: credential.id,
+      rawId: base64urlToBuffer(credential.rawId),
+      response: {
+        attestationObject: base64urlToBuffer(credential.response.attestationObject),
+        clientDataJSON: base64urlToBuffer(credential.response.clientDataJSON)
+      },
+      type: credential.type,
+      clientExtensionResults: credential.clientExtensionResults || {}
+    };
+
+    console.log('Verifying registration with challenge length:', expectedChallengeBuffer.length);
+
     // Verify registration
     const verification = await verifyRegistrationResponse({
-      response: {
-        id: credential.id,
-        rawId: credential.rawId,
-        response: {
-          attestationObject: credential.response.attestationObject,
-          clientDataJSON: credential.response.clientDataJSON
-        },
-        type: credential.type,
-        clientExtensionResults: credential.clientExtensionResults || {},
-        authenticatorAttachment: credential.authenticatorAttachment
-      },
-      expectedChallenge: base64urlToBuffer(expectedChallenge),
+      response: credentialData,
+      expectedChallenge: expectedChallengeBuffer,
       expectedOrigin: origin,
       expectedRPID: rpID,
       requireUserVerification: true
     });
 
     if (!verification.verified || !verification.registrationInfo) {
+      console.error('Verification failed:', verification.verificationError);
       return res.status(400).json({ 
         success: false,
         error: 'Registration verification failed',
-        code: 'VERIFICATION_FAILED'
+        code: 'VERIFICATION_FAILED',
+        details: verification.verificationError?.message
       });
     }
 
@@ -5232,3 +5321,4 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
