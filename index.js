@@ -771,6 +771,15 @@ async function initializeAdmin() {
   }
 }
 
+app.use((req, res, next) => {
+  // Allow framing from same origin and trusted domains including Google
+  res.setHeader(
+    'Content-Security-Policy',
+    "frame-ancestors 'self' https://jokercreation.store https://razorpay-integration-i7ao.onrender.com https://www.google.com;"
+  );
+  next();
+});
+
 // ==================== ROUTES ====================
 
 // Add this middleware before your routes
@@ -5124,6 +5133,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
