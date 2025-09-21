@@ -1768,6 +1768,62 @@ app.post('/api/admin/webauthn/check-credentials', authenticateAdmin, async (req,
   }
 });
 
+// Add this endpoint to your bookings backend
+app.post('/api/admin/webauthn/check-credentials-with-users-token', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ 
+        error: 'Invalid authorization format',
+        code: 'INVALID_AUTH_FORMAT'
+      });
+    }
+
+    const usersToken = authHeader.split(' ')[1];
+    
+    if (!usersToken) {
+      return res.status(401).json({ 
+        error: 'Token missing',
+        code: 'TOKEN_MISSING'
+      });
+    }
+
+    // Verify the token using the same secret as the users backend
+    const decoded = jwt.verify(usersToken, process.env.JWT_SECRET);
+    
+    if (!decoded.email || decoded.role !== 'admin') {
+      return res.status(401).json({ 
+        error: 'Invalid token',
+        code: 'INVALID_TOKEN'
+      });
+    }
+    
+    // Find the admin in the bookings database
+    const admin = await Admin.findOne({ email: decoded.email });
+    if (!admin) {
+      return res.status(404).json({ 
+        error: 'Admin not found',
+        code: 'ADMIN_NOT_FOUND'
+      });
+    }
+
+    const hasWebAuthn = admin.webauthnCredentials.length > 0;
+    
+    res.json({
+      success: true,
+      hasWebAuthn
+    });
+  } catch (err) {
+    console.error('Error checking WebAuthn credentials with users token:', err);
+    res.status(500).json({ 
+      error: 'Failed to check credentials',
+      code: 'CHECK_FAILED',
+      details: err.message 
+    });
+  }
+});
+
 
 // ===== COUPON ROUTES ===== //
 
@@ -5154,5 +5210,6 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
