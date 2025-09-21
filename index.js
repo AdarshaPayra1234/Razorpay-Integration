@@ -85,15 +85,7 @@ function uint8ArrayToBase64url(input) {
       .replace(/=/g, '');
   }
   
-  // Handle string input (base64url)
-  if (typeof input === 'string') {
-    if (!isValidBase64url(input)) {
-      throw new Error('String input is not valid base64url');
-    }
-    return input;
-  }
-  
-  throw new Error('Expected Uint8Array, Buffer, Array, or string, got ' + typeof input);
+  throw new Error('Expected Uint8Array, Buffer, or string, got ' + typeof input);
 }
 
 // Add this function to convert base64url to buffer
@@ -1205,7 +1197,6 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
     const admin = req.admin;
     console.log('Admin found:', admin.email);
 
-    // Generate registration options
     const options = await generateRegistrationOptions({
       rpName: 'Joker Creation Admin Panel',
       rpID: rpID,
@@ -1219,45 +1210,54 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
         authenticatorAttachment: 'platform'
       },
       timeout: 60000,
-      challenges: '1200000000000000000000000000000000000000000' // Add this line
+      challenge: crypto.randomBytes(32) // ✅ fixed name + type
     });
 
-    // Store challenge in session
-    // Store challenge in session with proper error handling
-req.session.webauthnChallenge = options.challenge;
-req.session.webauthnEmail = admin.email;
-req.session.webauthnTimestamp = Date.now();
+    req.session.webauthnChallenge = options.challenge;
+    req.session.webauthnEmail = admin.email;
+    req.session.webauthnTimestamp = Date.now();
 
-// Save session with error handling
-try {
-  await new Promise((resolve, reject) => {
-    req.session.save((err) => {
-      if (err) {
-        console.error('Failed to save session:', err);
-        reject(err);
-      } else {
-        console.log('Session saved successfully with challenge');
-        // Verify session was actually saved by checking store
-        req.sessionStore.get(req.sessionID, (storeErr, sessionData) => {
-          if (storeErr) {
-            console.error('Error verifying session storage:', storeErr);
-          } else if (sessionData && sessionData.webauthnChallenge) {
-            console.log('Session verified in store, challenge exists');
+    try {
+      await new Promise((resolve, reject) => {
+        req.session.save((err) => {
+          if (err) {
+            console.error('Failed to save session:', err);
+            reject(err);
           } else {
-            console.warn('Session not found in store or missing challenge');
+            console.log('Session saved successfully with challenge');
+            req.sessionStore.get(req.sessionID, (storeErr, sessionData) => {
+              if (storeErr) {
+                console.error('Error verifying session storage:', storeErr);
+              } else if (sessionData && sessionData.webauthnChallenge) {
+                console.log('Session verified in store, challenge exists');
+              } else {
+                console.warn('Session not found in store or missing challenge');
+              }
+              resolve();
+            });
           }
-          resolve();
         });
-      }
+      });
+    } catch (saveError) {
+      console.error('Critical session save error:', saveError);
+      return res.status(500).json({ 
+        error: 'Failed to save authentication session',
+        code: 'SESSION_SAVE_ERROR'
+      });
+    }
+
+    // ✅ you need a response here
+    return res.json(options);
+
+  } catch (err) {
+    console.error('Unexpected error in generate-registration-options:', err);
+    return res.status(500).json({
+      error: 'Internal server error',
+      code: 'INTERNAL_ERROR'
     });
-  });
-} catch (saveError) {
-  console.error('Critical session save error:', saveError);
-  return res.status(500).json({ 
-    error: 'Failed to save authentication session',
-    code: 'SESSION_SAVE_ERROR'
-  });
-}
+  }
+});
+
 
 
 // ===== Debug Routes ===== //
@@ -5368,4 +5368,5 @@ initializeAdmin().then(() => {
 }).catch(err => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
+
 });
