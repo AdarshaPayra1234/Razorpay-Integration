@@ -1747,6 +1747,27 @@ app.post('/api/admin/webauthn/debug-base64url', authenticateAdmin, (req, res) =>
   }
 });
 
+// Add this after your other WebAuthn routes
+app.post('/api/admin/webauthn/check-credentials', authenticateAdmin, async (req, res) => {
+  try {
+    const admin = req.admin; // Now contains the full admin document
+    if (!admin) {
+      return res.status(404).json({ error: 'Admin not found' });
+    }
+
+    // Check if admin has WebAuthn credentials
+    const hasWebAuthn = admin.webauthnCredentials.length > 0;
+    
+    res.json({
+      success: true,
+      hasWebAuthn
+    });
+  } catch (err) {
+    console.error('Error checking WebAuthn credentials:', err);
+    res.status(500).json({ error: 'Failed to check credentials' });
+  }
+});
+
 
 // ===== COUPON ROUTES ===== //
 
@@ -5133,4 +5154,5 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
