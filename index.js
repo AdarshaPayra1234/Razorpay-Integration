@@ -575,12 +575,16 @@ const checkIPBlacklist = (req, res, next) => {
 };
 
 // Admin Authentication Middleware
+// ==================== MIDDLEWARE ====================
+
+// Admin Authentication Middleware - UPDATED VERSION
 const authenticateAdmin = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
     
     // Check if authorization header exists
     if (!authHeader) {
+      console.log('No authorization header found');
       return res.status(401).json({ 
         error: 'Authorization header missing',
         code: 'NO_AUTH_HEADER'
@@ -589,6 +593,7 @@ const authenticateAdmin = async (req, res, next) => {
 
     // Check if it's a Bearer token
     if (!authHeader.startsWith('Bearer ')) {
+      console.log('Invalid authorization format:', authHeader.substring(0, 20));
       return res.status(401).json({ 
         error: 'Invalid authorization format. Use Bearer <token>',
         code: 'INVALID_AUTH_FORMAT'
@@ -598,27 +603,43 @@ const authenticateAdmin = async (req, res, next) => {
     const token = authHeader.split(' ')[1];
     
     // Check if token exists
-    if (!token) {
+    if (!token || token === 'undefined' || token === 'null') {
+      console.log('Token missing or invalid:', token);
       return res.status(401).json({ 
-        error: 'Token missing',
+        error: 'Token missing or invalid',
         code: 'TOKEN_MISSING'
       });
     }
 
     try {
+      // Debug: Log token details (first 20 chars only for security)
+      console.log('Token received:', token.substring(0, 20) + '...');
+      console.log('Token length:', token.length);
+      
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      
+      // Additional validation for required fields
+      if (!decoded.email || !decoded.role) {
+        console.log('Token missing required fields:', decoded);
+        return res.status(401).json({ 
+          error: 'Token payload incomplete',
+          code: 'INVALID_TOKEN_PAYLOAD'
+        });
+      }
       
       // Check if it's an admin
       if (decoded.role !== 'admin') {
+        console.log('Non-admin role attempt:', decoded.role);
         return res.status(403).json({ 
           error: 'Access denied. Admin role required.',
           code: 'ACCESS_DENIED'
         });
       }
       
-      // Find the full admin document
+      // Find the full admin document with credentials
       const admin = await Admin.findOne({ email: decoded.email });
       if (!admin) {
+        console.log('Admin not found for email:', decoded.email);
         return res.status(401).json({ 
           error: 'Admin account not found',
           code: 'ADMIN_NOT_FOUND'
@@ -626,10 +647,15 @@ const authenticateAdmin = async (req, res, next) => {
       }
       
       req.admin = admin;
+      console.log('Admin authenticated successfully:', decoded.email);
       return next();
       
     } catch (tokenError) {
-      console.error('Token verification error:', tokenError);
+      console.error('Token verification error:', {
+        name: tokenError.name,
+        message: tokenError.message,
+        expiredAt: tokenError.expiredAt
+      });
       
       if (tokenError.name === 'TokenExpiredError') {
         return res.status(401).json({ 
@@ -639,12 +665,25 @@ const authenticateAdmin = async (req, res, next) => {
       }
       
       if (tokenError.name === 'JsonWebTokenError') {
+        // More specific error messages for JWT issues
+        let errorDetails = 'Invalid token';
+        if (tokenError.message.includes('jwt malformed')) {
+          errorDetails = 'Token structure is malformed or corrupted';
+        } else if (tokenError.message.includes('invalid signature')) {
+          errorDetails = 'Token signature verification failed';
+        } else if (tokenError.message.includes('jwt must be provided')) {
+          errorDetails = 'No token provided';
+        }
+        
         return res.status(401).json({ 
-          error: 'Invalid token',
-          code: 'INVALID_TOKEN'
+          error: errorDetails,
+          code: 'INVALID_TOKEN',
+          details: tokenError.message
         });
       }
       
+      // For other unexpected errors
+      console.error('Unexpected token error:', tokenError);
       return res.status(401).json({ 
         error: 'Authentication failed',
         code: 'AUTH_FAILED',
@@ -652,9 +691,9 @@ const authenticateAdmin = async (req, res, next) => {
       });
     }
   } catch (err) {
-    console.error('Admin authentication error:', err);
+    console.error('Admin authentication middleware error:', err);
     return res.status(500).json({ 
-      error: 'Internal server error',
+      error: 'Internal server error during authentication',
       code: 'SERVER_ERROR',
       details: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
@@ -1698,6 +1737,7 @@ app.post('/api/admin/webauthn/debug-base64url', authenticateAdmin, (req, res) =>
     });
   }
 });
+
 
 // ===== COUPON ROUTES ===== //
 
@@ -5084,6 +5124,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
