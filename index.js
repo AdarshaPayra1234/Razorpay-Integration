@@ -5356,11 +5356,15 @@ if (!fs.existsSync(uploadDir)) {
 initializeAdmin().then(() => {
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    console.log('Environment:', process.env.NODE_ENV || 'development');
+    console.log('WebAuthn RP ID:', rpID);
+    console.log('Origin:', origin);
   });
 }).catch(err => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
