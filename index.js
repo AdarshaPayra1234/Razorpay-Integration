@@ -48,18 +48,17 @@ console.log('SimpleWebAuthn imported:', {
 
 // ADD THE FUNCTION HERE - after requires, before routes
 // Replace the uint8ArrayToBase64url function with this improved version
-// Enhanced bufferToBase64url conversion function
-function bufferToBase64url(input) {
+function uint8ArrayToBase64url(input) {
   // If it's already a string (base64url), return it as is
   if (typeof input === 'string') {
-    // Validate it's a proper base64url string
-    if (isValidBase64url(input)) {
-      return input;
-    } else {
-      throw new Error('Input string is not valid base64url');
-    }
+    return input;
   }
   
+  if (!input) {
+    throw new Error('Input is undefined');
+  }
+  
+  // Handle Buffer objects
   if (Buffer.isBuffer(input)) {
     return input.toString('base64')
       .replace(/\+/g, '-')
@@ -67,6 +66,7 @@ function bufferToBase64url(input) {
       .replace(/=/g, '');
   }
   
+  // Handle Uint8Array
   if (input instanceof Uint8Array) {
     return Buffer.from(input)
       .toString('base64')
@@ -75,7 +75,8 @@ function bufferToBase64url(input) {
       .replace(/=/g, '');
   }
   
-  if (Array.isArray(input)) {
+  // Handle other array-like objects
+  if (Array.isArray(input) || input.length !== undefined) {
     const uint8Array = new Uint8Array(input);
     return Buffer.from(uint8Array)
       .toString('base64')
@@ -84,7 +85,7 @@ function bufferToBase64url(input) {
       .replace(/=/g, '');
   }
   
-  throw new Error('Expected Buffer, Uint8Array, Array, or base64url string, got: ' + typeof input);
+  throw new Error('Expected Uint8Array, Buffer, or string, got ' + typeof input);
 }
 
 // Add this function to convert base64url to buffer
@@ -216,10 +217,9 @@ app.use(cookieParser());
 // Session middleware configuration for production
 // Enhanced session configuration
 // Enhanced session configuration - Replace existing session config
-// Enhanced session configuration
 app.use(session({
   secret: process.env.SESSION_SECRET || 'your-webauthn-session-secret-key',
-  resave: true, // Changed from false to true to ensure session is saved
+  resave: false,
   saveUninitialized: false,
   cookie: {
     secure: process.env.NODE_ENV === 'production',
@@ -231,39 +231,24 @@ app.use(session({
   store: MongoStore.create({
     mongoUrl: process.env.MONGODB_URI,
     collectionName: 'webauthn_sessions',
-    ttl: 24 * 60 * 60, // 24 hours
-    autoRemove: 'native',
-    // Add connection error handling
-    autoRemoveInterval: 10, // Remove expired sessions every 10 minutes
-    touchAfter: 24 * 3600 // Time period in seconds
+    ttl: 24 * 60 * 60,
+    autoRemove: 'native'
   }),
   name: 'webauthn.sid',
   rolling: true,
-  proxy: true,
-  // Add unset to preserve session on logout
-  unset: 'keep'
+  proxy: true
 }));
 
 // Add session debugging middleware
 app.use((req, res, next) => {
-  console.log('Session status:', {
+  console.log('Session debug:', {
     sessionId: req.sessionID,
-    hasSession: !!req.session,
-    sessionKeys: req.session ? Object.keys(req.session) : []
+    hasChallenge: !!req.session.webauthnChallenge,
+    challenge: req.session.webauthnChallenge ? 
+      req.session.webauthnChallenge.substring(0, 20) + '...' : null,
+    hasEmail: !!req.session.webauthnEmail
   });
   next();
-});
-
-// Add session error handling
-app.use((err, req, res, next) => {
-  if (err.code === 'NSERR_SESSION_NOT_SAVED') {
-    console.error('Session save error:', err);
-    return res.status(500).json({ 
-      error: 'Session storage error', 
-      code: 'SESSION_ERROR' 
-    });
-  }
-  next(err);
 });
 
 // WebAuthn configuration
@@ -1196,22 +1181,11 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
     const admin = req.admin;
     console.log('Admin found:', admin.email);
 
-    // Convert the admin ID to Uint8Array for the userID
-    const adminIdString = admin._id.toString();
-    const userID = new TextEncoder().encode(adminIdString);
-
-    // Properly format excludeCredentials - credentials from DB are already base64url strings
-    const excludeCredentials = admin.webauthnCredentials.map(cred => ({
-      id: base64urlToBuffer(cred.credentialID), // Convert from base64url to Buffer
-      type: 'public-key',
-      transports: ['internal'] // Add default transport
-    }));
-
-    // Generate registration options using simplewebauthn's built-in challenge generation
+    // Generate registration options
     const options = await generateRegistrationOptions({
       rpName: 'Joker Creation Admin Panel',
       rpID: rpID,
-      userID: userID,
+      userID: Buffer.from(admin._id.toString()),
       userName: admin.email,
       userDisplayName: admin.email,
       attestationType: 'direct',
@@ -1221,7 +1195,7 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
         authenticatorAttachment: 'platform'
       },
       timeout: 60000,
-      excludeCredentials: excludeCredentials
+      challenges: '1200000000000000000000000000000000000000000' // Add this line
     });
 
     // Store challenge in session
@@ -1229,49 +1203,27 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
     req.session.webauthnEmail = admin.email;
     req.session.webauthnTimestamp = Date.now();
 
-    // Save session with error handling
-    try {
-      await new Promise((resolve, reject) => {
-        req.session.save((err) => {
-          if (err) {
-            console.error('Failed to save session:', err);
-            reject(err);
-          } else {
-            console.log('Session saved successfully with challenge');
-            resolve();
-          }
-        });
-      });
-    } catch (saveError) {
-      console.error('Critical session save error:', saveError);
-      return res.status(500).json({ 
-        error: 'Failed to save authentication session',
-        code: 'SESSION_SAVE_ERROR'
-      });
-    }
+    await new Promise((resolve, reject) => {
+      req.session.save(err => err ? reject(err) : resolve());
+    });
 
-    // Convert challenge & IDs to base64url for client
-    // Note: options.challenge is already a base64url string from simplewebauthn
-    const responseOptions = {
+    console.log('Session saved with challenge');
+
+    res.json({
       ...options,
-      // challenge is already in correct format from simplewebauthn
+      challenge: bufferToBase64url(Buffer.from(options.challenge, 'base64')),
       user: {
         ...options.user,
         id: bufferToBase64url(options.user.id)
       },
       excludeCredentials: options.excludeCredentials.map(cred => ({
-  id: bufferToBase64url(cred.id),
-  type: cred.type,
-  transports: cred.transports || []
-}))
-
-    res.json({
-      ...responseOptions,
-      sessionId: req.sessionID
+        ...cred,
+        id: bufferToBase64url(cred.id)
+      }))
     });
 
   } catch (err) {
-    console.error('Unexpected error in generate-registration-options:', err);
+    console.error('Error generating registration options:', err);
     res.status(500).json({ 
       error: 'Failed to generate registration options',
       code: 'GENERATION_FAILED',
@@ -1279,6 +1231,7 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
     });
   }
 });
+
 
 // ===== Debug Routes ===== //
 
@@ -1384,254 +1337,88 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
     const { credential, deviceName } = req.body;
 
     console.log('=== WEB AUTHN VERIFICATION STARTED ===');
-    console.log('Session on verification request:', {
-      sessionId: req.sessionID,
-      hasChallenge: !!req.session.webauthnChallenge,
-      hasEmail: !!req.session.webauthnEmail
-    });
 
-    // ===== SESSION VALIDATION ===== //
-    let expectedChallenge = req.session.webauthnChallenge;
-    let adminEmail = req.session.webauthnEmail;
-
-    // If challenge not found in current session, try to restore from store
-    if (!expectedChallenge && req.sessionID) {
-      console.log('Attempting to restore session from store...');
-      try {
-        const sessionData = await new Promise((resolve, reject) => {
-          req.sessionStore.get(req.sessionID, (err, session) => {
-            if (err) {
-              console.error('Session store access error:', err);
-              reject(err);
-            } else {
-              resolve(session);
-            }
-          });
-        });
-
-        if (sessionData) {
-          console.log('Session data from store:', {
-            hasChallenge: !!sessionData.webauthnChallenge,
-            hasEmail: !!sessionData.webauthnEmail,
-            timestamp: sessionData.webauthnTimestamp
-          });
-
-          if (sessionData.webauthnChallenge && sessionData.webauthnEmail) {
-            expectedChallenge = sessionData.webauthnChallenge;
-            adminEmail = sessionData.webauthnEmail;
-            
-            // Restore to current session
-            req.session.webauthnChallenge = expectedChallenge;
-            req.session.webauthnEmail = adminEmail;
-            req.session.webauthnTimestamp = sessionData.webauthnTimestamp || Date.now();
-
-            console.log('Session restored successfully from store');
-          }
-        }
-      } catch (restoreError) {
-        console.error('Session restoration failed:', restoreError);
-        // Continue with normal flow, we'll check if we have the data now
-      }
-    }
+    // Session validation
+    const expectedChallenge = req.session.webauthnChallenge;
+    const adminEmail = req.session.webauthnEmail;
 
     if (!expectedChallenge || !adminEmail) {
-      console.error('Missing session data after restoration attempt:', {
-        hasChallenge: !!expectedChallenge,
-        hasEmail: !!adminEmail,
-        sessionId: req.sessionID
-      });
-      
       return res.status(400).json({ 
         success: false,
-        error: 'Authentication session expired or corrupted',
-        code: 'SESSION_EXPIRED',
-        details: 'Please start the registration process again'
+        error: 'Authentication session expired',
+        code: 'SESSION_EXPIRED'
       });
     }
 
-    // ===== INPUT VALIDATION ===== //
-    if (!credential || !credential.id || !credential.response) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Invalid credential data structure',
-        code: 'INVALID_CREDENTIAL_STRUCTURE'
-      });
-    }
-
-    // Validate base64url encoding for all required fields
-    const requiredFields = [
-      { field: credential.id, name: 'credential.id' },
-      { field: credential.rawId, name: 'credential.rawId' },
-      { field: credential.response.clientDataJSON, name: 'credential.response.clientDataJSON' },
-      { field: credential.response.attestationObject, name: 'credential.response.attestationObject' }
-    ];
-
-    for (const { field, name } of requiredFields) {
-      if (!field) {
-        return res.status(400).json({ 
-          success: false,
-          error: `Missing required field: ${name}`,
-          code: 'MISSING_REQUIRED_FIELD'
-        });
-      }
-
-      if (!isValidBase64url(field)) {
-        return res.status(400).json({ 
-          success: false,
-          error: `Invalid base64url encoding for ${name}`,
-          code: 'INVALID_BASE64URL_ENCODING',
-          field: name
-        });
-      }
-    }
-
-    // Validate credential type
-    if (credential.type !== 'public-key') {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Invalid credential type',
-        code: 'INVALID_CREDENTIAL_TYPE',
-        details: `Expected 'public-key', got '${credential.type}'`
-      });
-    }
-
-    if (!deviceName || typeof deviceName !== 'string' || deviceName.trim().length === 0) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Device name is required',
-        code: 'MISSING_DEVICE_NAME',
-        details: 'Please provide a valid device name'
-      });
-    }
-
-    // ===== ADMIN VALIDATION ===== //
+    // Find admin
     const admin = await Admin.findOne({ email: adminEmail });
     if (!admin) {
       return res.status(404).json({ 
         success: false,
         error: 'Admin not found',
-        code: 'ADMIN_NOT_FOUND',
-        details: 'No admin account found for the provided email'
+        code: 'ADMIN_NOT_FOUND'
       });
     }
-    console.log('Admin found:', admin.email);
 
-    // ===== DATA CONVERSION ===== //
-    console.log('Converting credential data to proper formats...');
-    let credentialIdBuffer, credentialIdString;
-    try {
-      credentialIdString = credential.id;
+    // Verify registration
+    const verification = await verifyRegistrationResponse({
+      response: {
+        id: credential.id,
+        rawId: credential.rawId,
+        response: {
+          attestationObject: credential.response.attestationObject,
+          clientDataJSON: credential.response.clientDataJSON
+        },
+        type: credential.type,
+        clientExtensionResults: credential.clientExtensionResults || {},
+        authenticatorAttachment: credential.authenticatorAttachment
+      },
+      expectedChallenge: expectedChallenge,
+      expectedOrigin: origin,
+      expectedRPID: rpID,
+      requireUserVerification: true
+    });
 
-      if (typeof credential.rawId === 'string') {
-        credentialIdBuffer = base64urlToBuffer(credential.rawId);
-      } else if (credential.rawId instanceof ArrayBuffer || credential.rawId instanceof Uint8Array) {
-        credentialIdBuffer = credential.rawId instanceof Uint8Array ? credential.rawId : new Uint8Array(credential.rawId);
-      } else throw new Error('Invalid credential.rawId format');
-
-      console.log('Credential ID validation:', { id: credentialIdString, isValid: isValidBase64url(credentialIdString), length: credentialIdString.length });
-
-      if (!isValidBase64url(credentialIdString)) throw new Error('Credential ID is not valid base64url');
-      if (credentialIdBuffer.length < 16 || credentialIdBuffer.length > 1024) throw new Error('Credential ID has invalid length');
-
-      console.log('Credential ID validation passed');
-    } catch (conversionError) {
-      console.error('Credential ID conversion error:', conversionError);
+    if (!verification.verified || !verification.registrationInfo) {
       return res.status(400).json({ 
         success: false,
-        error: 'Invalid credential ID format',
-        code: 'INVALID_CREDENTIAL_ID',
-        details: conversionError.message
+        error: 'Registration verification failed',
+        code: 'VERIFICATION_FAILED'
       });
     }
 
-    // ===== RESPONSE DATA CONVERSION ===== //
-    try {
-      console.log('Converting response data...');
-      const clientDataJSONBuffer = base64urlToBuffer(credential.response.clientDataJSON);
-      const attestationObjectBuffer = base64urlToBuffer(credential.response.attestationObject);
-      const expectedChallengeBuffer = base64urlToBuffer(expectedChallenge);
+    // Save credential
+    const { credentialPublicKey, credentialID, counter } = verification.registrationInfo;
+    
+    admin.webauthnCredentials.push({
+      credentialID: bufferToBase64url(credentialID),
+      credentialPublicKey: bufferToBase64url(credentialPublicKey),
+      counter,
+      deviceName: deviceName || 'Unknown Device',
+      deviceType: 'platform',
+      addedAt: new Date()
+    });
 
-      console.log('Client data length:', clientDataJSONBuffer.length);
-      console.log('Attestation object length:', attestationObjectBuffer.length);
-      console.log('Expected challenge buffer length:', expectedChallengeBuffer.length);
+    await admin.save();
 
-      const response = {
-        id: credentialIdString,
-        rawId: credentialIdBuffer,
-        response: { clientDataJSON: clientDataJSONBuffer, attestationObject: attestationObjectBuffer },
-        type: credential.type || 'public-key',
-        clientExtensionResults: credential.clientExtensionResults || {}
-      };
-      console.log('Credential data conversion completed');
+    // Clear session
+    req.session.webauthnChallenge = null;
+    req.session.webauthnEmail = null;
+    await req.session.save();
 
-      // Parse clientDataJSON for challenge validation
-      let clientDataJSON;
-      try {
-        clientDataJSON = JSON.parse(clientDataJSONBuffer.toString('utf-8'));
-      } catch (parseError) {
-        console.error('Failed to parse clientDataJSON:', parseError);
-        return res.status(400).json({ success: false, error: 'Invalid clientDataJSON', code: 'CLIENT_DATA_JSON_PARSE_ERROR', details: parseError.message });
-      }
+    res.json({ 
+      success: true, 
+      message: 'Security key registered successfully' 
+    });
 
-      console.log('Client challenge:', clientDataJSON.challenge);
-      console.log('Expected challenge:', expectedChallenge);
-
-      if (clientDataJSON.challenge !== expectedChallenge) {
-        console.error('Challenge mismatch!');
-        throw new Error('Challenge mismatch');
-      }
-
-      // ===== VERIFICATION ===== //
-      console.log('Starting registration verification...');
-      const verification = await verifyRegistrationResponse({
-        response,
-        expectedChallenge: expectedChallengeBuffer,
-        expectedOrigin: origin,
-        expectedRPID: rpID,
-        requireUserVerification: true
-      });
-
-      console.log('Verification completed:', { verified: verification.verified, hasRegistrationInfo: !!verification.registrationInfo });
-
-      if (!verification.verified || !verification.registrationInfo) {
-        console.error('Verification failed:', verification);
-        return res.status(400).json({ success: false, error: 'Registration verification failed', code: 'VERIFICATION_FAILED', details: verification.verificationError?.message || 'Unknown verification error' });
-      }
-
-      const { credentialPublicKey, credentialID, counter } = verification.registrationInfo;
-      const credentialIDBase64 = bufferToBase64url(credentialID);
-      const credentialPublicKeyBase64 = bufferToBase64url(credentialPublicKey);
-
-      const existingCredential = admin.webauthnCredentials.find(cred => cred.credentialID === credentialIDBase64);
-      if (existingCredential) return res.status(400).json({ success: false, error: 'This security key is already registered', code: 'CREDENTIAL_EXISTS' });
-
-      admin.webauthnCredentials.push({
-        credentialID: credentialIDBase64,
-        credentialPublicKey: credentialPublicKeyBase64,
-        counter,
-        deviceType: 'platform',
-        deviceName: deviceName.trim(),
-        addedAt: new Date()
-      });
-      await admin.save();
-      console.log('Credential saved successfully');
-
-      // ===== CLEANUP ===== //
-      req.session.webauthnChallenge = null;
-      req.session.webauthnEmail = null;
-      await new Promise((resolve, reject) => req.session.save(err => err ? reject(err) : resolve()));
-
-      console.log('=== WEB AUTHN REGISTRATION COMPLETED SUCCESSFULLY ===');
-      res.json({ success: true, message: 'Security key registered successfully', credential: { deviceName: deviceName.trim(), deviceType: 'platform', addedAt: new Date().toISOString() } });
-
-    } catch (verificationError) {
-      console.error('❌ CRITICAL ERROR in verification:', verificationError);
-      res.status(500).json({ success: false, error: 'Failed to verify registration', code: 'VERIFICATION_ERROR', details: verificationError.message });
-    }
-
-  } catch (outerError) {
-    console.error('❌ CRITICAL ROUTE ERROR:', outerError);
-    res.status(500).json({ success: false, error: 'Server error', code: 'SERVER_ERROR', details: outerError.message });
+  } catch (err) {
+    console.error('Error verifying registration:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to verify registration',
+      code: 'VERIFICATION_ERROR',
+      details: err.message 
+    });
   }
 });
 
@@ -1642,49 +1429,6 @@ app.get('/api/debug/session', authenticateAdmin, (req, res) => {
     email: req.session.webauthnEmail,
     timestamp: req.session.webauthnTimestamp
   });
-});
-
-    // Add session health check endpoint
-app.get('/api/admin/session-health', authenticateAdmin, async (req, res) => {
-  try {
-    const sessionInfo = {
-      sessionId: req.sessionID,
-      sessionData: {
-        webauthnChallenge: !!req.session.webauthnChallenge,
-        webauthnEmail: !!req.session.webauthnEmail,
-        webauthnTimestamp: req.session.webauthnTimestamp,
-        allKeys: Object.keys(req.session)
-      }
-    };
-
-    // Check if session exists in store
-    const storeData = await new Promise((resolve) => {
-      req.sessionStore.get(req.sessionID, (err, session) => {
-        if (err) {
-          resolve({ error: err.message });
-        } else {
-          resolve({
-            exists: !!session,
-            challengeInStore: session ? !!session.webauthnChallenge : false,
-            emailInStore: session ? !!session.webauthnEmail : false
-          });
-        }
-      });
-    });
-
-    res.json({
-      success: true,
-      sessionInfo,
-      storeInfo: storeData,
-      storeType: req.sessionStore.constructor.name
-    });
-  } catch (error) {
-    console.error('Session health check error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Session health check failed' 
-    });
-  }
 });
 
 
@@ -5388,8 +5132,5 @@ initializeAdmin().then(() => {
 }).catch(err => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
-
 });
-
-
 
