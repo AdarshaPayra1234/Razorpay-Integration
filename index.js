@@ -863,7 +863,7 @@ app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) =
     // Generate JWT token
     // In users backend login route
 const token = jwt.sign(
-  { email: user.email, role: 'admin' },
+  { email: user., role: 'admin' },
   process.env.JWT_SECRET,  // Same secret as bookings backend
   { expiresIn: '8h' }
 );
@@ -933,7 +933,7 @@ app.post('/api/admin/check-phone', checkIPBlacklist, async (req, res) => {
 // Route to verify OTP for admin login
 app.post('/api/admin/verify-otp', checkIPBlacklist, async (req, res) => {
     try {
-        const { idToken, email } = req.body;
+        const { idToken,  } = req.body;
         
         if (!idToken) {
             return res.status(400).json({ error: 'ID token is required' });
@@ -952,11 +952,11 @@ app.post('/api/admin/verify-otp', checkIPBlacklist, async (req, res) => {
             return res.status(401).json({ error: 'Unauthorized phone number' });
         }
         
-        // Verify admin credentials (email/password) first
+        // Verify admin credentials (/password) first
         try {
             // This simulates checking against your admin database
             // Replace with your actual admin verification logic
-            const adminUser = await Admin.findOne({ email });
+            const adminUser = await Admin.findOne({  });
             if (!adminUser) {
                 return res.status(401).json({ error: 'Invalid admin credentials' });
             }
@@ -964,7 +964,7 @@ app.post('/api/admin/verify-otp', checkIPBlacklist, async (req, res) => {
             // Generate JWT token for admin access
             const token = jwt.sign(
                 { 
-                    email: adminUser.email, 
+                    : adminUser., 
                     role: 'admin',
                     uid: decodedToken.uid 
                 },
@@ -1026,14 +1026,14 @@ app.post('/api/admin/refresh-token', async (req, res) => {
     }
 
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    const admin = await Admin.findOne({ email: decoded.email });
+    const admin = await Admin.findOne({ : decoded. });
     
     if (!admin) {
       return res.status(401).json({ error: 'Invalid refresh token' });
     }
 
     const newToken = jwt.sign(
-      { email: admin.email, role: 'admin' },
+      { : admin., role: 'admin' },
       process.env.JWT_SECRET,
       { expiresIn: '1h' }
     );
@@ -1183,15 +1183,15 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
     }
 
     const admin = req.admin;
-    console.log('Admin found:', admin.email);
+    console.log('Admin found:', admin.);
 
     // Generate registration options
     const options = await generateRegistrationOptions({
       rpName: 'Joker Creation Admin Panel',
       rpID: rpID,
       userID: Buffer.from(admin._id.toString()),
-      userName: admin.email,
-      userDisplayName: admin.email,
+      userName: admin.,
+      userDisplayName: admin.,
       attestationType: 'direct',
       authenticatorSelection: {
         residentKey: 'preferred',
@@ -1204,7 +1204,7 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
 
     // Store challenge in session
     req.session.webauthnChallenge = options.challenge;
-    req.session.webauthnEmail = admin.email;
+    req.session.webauthn = admin.;
     req.session.webauthnTimestamp = Date.now();
 
     await new Promise((resolve, reject) => {
@@ -1256,8 +1256,8 @@ app.get('/api/debug/session-info', authenticateAdmin, async (req, res) => {
       sessionKeys: Object.keys(req.session),
       hasChallenge: !!req.session.webauthnChallenge,
       challenge: req.session.webauthnChallenge,
-      hasEmail: !!req.session.webauthnEmail,
-      email: req.session.webauthnEmail,
+      has: !!req.session.webauthn,
+      : req.session.webauthn,
       cookie: req.headers.cookie
     };
     
@@ -1269,11 +1269,11 @@ app.get('/api/debug/session-info', authenticateAdmin, async (req, res) => {
 
 
 // Generate authentication options
-// Generate authentication options - UPDATED VERSION (email-based)
-// Generate authentication options - UPDATED VERSION (email-based)
+// Generate authentication options - UPDATED VERSION (-based)
+// Generate authentication options - UPDATED VERSION (-based)
 app.post('/api/admin/webauthn/generate-authentication-options', async (req, res) => {
   try {
-    const { email } = req.body;
+    const {  } = req.body;
     
     if (!email) {
       return res.status(400).json({ 
@@ -1437,6 +1437,81 @@ app.get('/api/debug/session', authenticateAdmin, (req, res) => {
   });
 });
 
+// Generate authentication options for specific credential
+app.post('/api/admin/webauthn/generate-auth-options', async (req, res) => {
+  try {
+    const { email, credentialId } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ 
+        error: 'Email is required',
+        code: 'EMAIL_REQUIRED'
+      });
+    }
+
+    const admin = await Admin.findOne({ email });
+    if (!admin) {
+      return res.status(404).json({ 
+        error: 'Admin not found',
+        code: 'ADMIN_NOT_FOUND'
+      });
+    }
+
+    // If specific credential ID is provided, use only that credential
+    let allowCredentials = [];
+    if (credentialId) {
+      const credential = admin.webauthnCredentials.id(credentialId);
+      if (!credential) {
+        return res.status(404).json({ 
+          error: 'Credential not found',
+          code: 'CREDENTIAL_NOT_FOUND'
+        });
+      }
+      allowCredentials = [{
+        id: base64urlToBuffer(credential.credentialID),
+        type: 'public-key'
+      }];
+    } else {
+      // Use all credentials
+      allowCredentials = admin.webauthnCredentials.map(cred => ({
+        id: base64urlToBuffer(cred.credentialID),
+        type: 'public-key'
+      }));
+    }
+
+    // Generate authentication options
+    const options = await generateAuthenticationOptions({
+      rpID,
+      allowCredentials,
+      userVerification: 'required'
+    });
+
+    // Store the challenge and email in the session
+    req.session.webauthnChallenge = bufferToBase64url(options.challenge);
+    req.session.webauthnEmail = email;
+    req.session.webauthnTimestamp = Date.now();
+
+    await new Promise((resolve, reject) => {
+      req.session.save((err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    res.json({
+      ...options,
+      challenge: bufferToBase64url(options.challenge)
+    });
+  } catch (err) {
+    console.error('Error generating authentication options:', err);
+    res.status(500).json({ 
+      error: 'Failed to generate authentication options',
+      code: 'AUTH_OPTIONS_FAILED',
+      details: err.message 
+    });
+  }
+});
+
 
 // Verify authentication
 // Verify authentication
@@ -1444,14 +1519,11 @@ app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
   try {
     const { credential, email } = req.body;
     
-    console.log('=== WEB AUTHN AUTHENTICATION VERIFICATION STARTED ===');
-
     // ===== SESSION VALIDATION =====
     const expectedChallenge = req.session.webauthnChallenge;
     const sessionEmail = req.session.webauthnEmail;
     const challengeTimestamp = req.session.webauthnTimestamp;
 
-    // Use email from session or from request body
     const adminEmail = sessionEmail || email;
     
     if (!expectedChallenge || !adminEmail) {
@@ -1494,7 +1566,7 @@ app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
       });
     }
 
-    // ===== DATA CONVERSION ===== //
+    // ===== DATA CONVERSION =====
     const authenticator = {
       credentialID: base64urlToBuffer(storedCredential.credentialID),
       credentialPublicKey: base64urlToBuffer(storedCredential.credentialPublicKey),
@@ -1514,7 +1586,7 @@ app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
       type: credential.type
     };
 
-    // ===== VERIFICATION ===== //
+    // ===== VERIFICATION =====
     const verification = await verifyAuthenticationResponse({
       response,
       expectedChallenge: base64urlToBuffer(expectedChallenge),
@@ -1542,7 +1614,7 @@ app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
     req.session.webauthnTimestamp = null;
     await req.session.save();
 
-    // Generate JWT token
+    // Generate JWT token for bookings backend
     const token = jwt.sign(
       { email: admin.email, role: 'admin' },
       process.env.JWT_SECRET,
@@ -1565,6 +1637,9 @@ app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
     });
   }
 });
+
+
+
 
 
 
@@ -5166,6 +5241,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
