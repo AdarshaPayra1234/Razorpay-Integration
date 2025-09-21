@@ -85,7 +85,15 @@ function uint8ArrayToBase64url(input) {
       .replace(/=/g, '');
   }
   
-  throw new Error('Expected Uint8Array, Buffer, or string, got ' + typeof input);
+  // Handle string input (base64url)
+  if (typeof input === 'string') {
+    if (!isValidBase64url(input)) {
+      throw new Error('String input is not valid base64url');
+    }
+    return input;
+  }
+  
+  throw new Error('Expected Uint8Array, Buffer, Array, or string, got ' + typeof input);
 }
 
 // Add this function to convert base64url to buffer
@@ -5361,34 +5369,3 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
