@@ -169,6 +169,7 @@ mongoose.connect(process.env.MONGODB_URI)
 
 // Enhanced CORS Configuration
 // Update your CORS configuration
+// Enhanced CORS Configuration
 const corsOptions = {
   origin: ['https://jokercreation.store', 'http://localhost:3000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -239,6 +240,7 @@ app.use(session({
   proxy: true
 }));
 
+
 // Add session debugging middleware
 app.use((req, res, next) => {
   console.log('Session debug:', {
@@ -246,7 +248,8 @@ app.use((req, res, next) => {
     hasChallenge: !!req.session.webauthnChallenge,
     challenge: req.session.webauthnChallenge ? 
       req.session.webauthnChallenge.substring(0, 20) + '...' : null,
-    hasEmail: !!req.session.webauthnEmail
+    hasEmail: !!req.session.webauthnEmail,
+    timestamp: req.session.webauthnTimestamp
   });
   next();
 });
@@ -1267,6 +1270,7 @@ app.get('/api/debug/session-info', authenticateAdmin, async (req, res) => {
 
 // Generate authentication options
 // Generate authentication options - UPDATED VERSION (email-based)
+// Generate authentication options - UPDATED VERSION (email-based)
 app.post('/api/admin/webauthn/generate-authentication-options', async (req, res) => {
   try {
     const { email } = req.body;
@@ -1288,7 +1292,7 @@ app.post('/api/admin/webauthn/generate-authentication-options', async (req, res)
 
     // Properly format allowCredentials
     const allowCredentials = admin.webauthnCredentials.map(cred => ({
-      id: Buffer.from(cred.credentialID, 'base64'),
+      id: base64urlToBuffer(cred.credentialID),
       type: 'public-key'
     }));
 
@@ -1300,8 +1304,9 @@ app.post('/api/admin/webauthn/generate-authentication-options', async (req, res)
     });
 
     // Store the challenge and email in the session
-    req.session.webauthnChallenge = uint8ArrayToBase64url(options.challenge);
+    req.session.webauthnChallenge = bufferToBase64url(options.challenge);
     req.session.webauthnEmail = email;
+    req.session.webauthnTimestamp = Date.now(); // Add timestamp for expiration check
 
     // Ensure session is saved
     await new Promise((resolve, reject) => {
@@ -1319,7 +1324,7 @@ app.post('/api/admin/webauthn/generate-authentication-options', async (req, res)
     // Convert challenge to base64url for client
     res.json({
       ...options,
-      challenge: uint8ArrayToBase64url(options.challenge)
+      challenge: bufferToBase64url(options.challenge)
     });
   } catch (err) {
     console.error('Error generating authentication options:', err);
@@ -1434,24 +1439,17 @@ app.get('/api/debug/session', authenticateAdmin, (req, res) => {
 
 
 // Verify authentication
+// Verify authentication
 app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
   try {
     const { credential, email } = req.body;
     
     console.log('=== WEB AUTHN AUTHENTICATION VERIFICATION STARTED ===');
 
-    // ===== INPUT VALIDATION =====
-    if (!credential || !credential.id || !credential.response) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Invalid credential data structure',
-        code: 'INVALID_CREDENTIAL_STRUCTURE'
-      });
-    }
-
     // ===== SESSION VALIDATION =====
     const expectedChallenge = req.session.webauthnChallenge;
     const sessionEmail = req.session.webauthnEmail;
+    const challengeTimestamp = req.session.webauthnTimestamp;
 
     // Use email from session or from request body
     const adminEmail = sessionEmail || email;
@@ -1464,8 +1462,7 @@ app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
       });
     }
 
-    // Check if challenge is too old
-    const challengeTimestamp = req.session.webauthnTimestamp;
+    // Check if challenge is too old (2 minutes)
     if (!challengeTimestamp || (Date.now() - challengeTimestamp > 2 * 60 * 1000)) {
       return res.status(400).json({ 
         success: false,
@@ -1511,7 +1508,8 @@ app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
         clientDataJSON: base64urlToBuffer(credential.response.clientDataJSON),
         authenticatorData: base64urlToBuffer(credential.response.authenticatorData),
         signature: base64urlToBuffer(credential.response.signature),
-        userHandle: credential.response.userHandle ? base64urlToBuffer(credential.response.userHandle) : undefined
+        userHandle: credential.response.userHandle ? 
+          base64urlToBuffer(credential.response.userHandle) : undefined
       },
       type: credential.type
     };
@@ -1541,10 +1539,10 @@ app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
     // Clear session
     req.session.webauthnChallenge = null;
     req.session.webauthnEmail = null;
+    req.session.webauthnTimestamp = null;
     await req.session.save();
 
     // Generate JWT token
-     // Generate JWT token
     const token = jwt.sign(
       { email: admin.email, role: 'admin' },
       process.env.JWT_SECRET,
@@ -5168,5 +5166,6 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
