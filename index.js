@@ -858,11 +858,12 @@ app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) =
     const hasWebAuthn = admin.webauthnCredentials.length > 0;
     
     // Generate JWT token
-    const token = jwt.sign(
-      { email: admin.email, role: 'admin' },
-      process.env.JWT_SECRET,
-      { expiresIn: '8h' }
-    );
+    // In users backend login route
+const token = jwt.sign(
+  { email: user.email, role: 'admin' },
+  process.env.JWT_SECRET,  // Same secret as bookings backend
+  { expiresIn: '8h' }
+);
     
     res.json({ 
       success: true, 
@@ -1816,10 +1817,24 @@ app.post('/api/admin/webauthn/check-credentials-with-users-token', async (req, r
     });
   } catch (err) {
     console.error('Error checking WebAuthn credentials with users token:', err);
-    res.status(500).json({ 
-      error: 'Failed to check credentials',
-      code: 'CHECK_FAILED',
-      details: err.message 
+    let statusCode = 500;
+    let errorCode = 'CHECK_FAILED';
+    let errorMessage = 'Failed to check credentials';
+
+    if (err.name === 'TokenExpiredError') {
+      statusCode = 401;
+      errorCode = 'TOKEN_EXPIRED';
+      errorMessage = 'Token has expired';
+    } else if (err.name === 'JsonWebTokenError') {
+      statusCode = 401;
+      errorCode = 'INVALID_TOKEN';
+      errorMessage = 'Invalid token';
+    }
+
+    res.status(statusCode).json({ 
+      error: errorMessage,
+      code: errorCode,
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
   }
 });
@@ -5210,6 +5225,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
