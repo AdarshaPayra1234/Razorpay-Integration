@@ -1071,7 +1071,6 @@ app.options('/api/admin/webauthn/*', (req, res) => {
 // ===== Base64URL Utilities ===== //
 
 // Improved base64url validation function
-// Enhanced base64url validation function
 function isValidBase64url(str) {
   if (typeof str !== 'string') return false;
   
@@ -1085,7 +1084,6 @@ function isValidBase64url(str) {
 }
 
 // Convert base64url string → Buffer
-// Around line 100-150
 function base64urlToBuffer(base64urlString) {
   if (!base64urlString || typeof base64urlString !== 'string') {
     throw new Error('Invalid base64url string');
@@ -1111,12 +1109,6 @@ function bufferToBase64url(buffer) {
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=/g, '');
-}
-
-function isValidBase64url(str) {
-  if (typeof str !== 'string') return false;
-  const base64urlRegex = /^[A-Za-z0-9_-]+$/;
-  return base64urlRegex.test(str) && str.length % 4 !== 1;
 }
 
 // Convert Uint8Array → base64url
@@ -1262,37 +1254,112 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
   }
 });
 
-
-// ===== Debug Routes ===== //
-
-app.get('/api/debug/cookies', (req, res) => {
-  res.json({
-    cookies: req.headers.cookie,
-    sessionId: req.sessionID,
-    session: req.session,
-    headers: req.headers
-  });
-});
-
-app.get('/api/debug/session-info', authenticateAdmin, async (req, res) => {
+// Verify registration - FIXED VERSION
+app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnRateLimit, async (req, res) => {
   try {
-    const sessionInfo = {
-      sessionId: req.sessionID,
-      session: req.session,
-      sessionKeys: Object.keys(req.session),
-      hasChallenge: !!req.session.webauthnChallenge,
-      challenge: req.session.webauthnChallenge,
-      hasEmail: !!req.session.webauthnEmail,
-      email: req.session.webauthnEmail,
-      cookie: req.headers.cookie
-    };
+    const { credential, deviceName } = req.body;
+
+    console.log('=== WEB AUTHN VERIFICATION STARTED ===');
+
+    // Session validation
+    let expectedChallenge = req.session.webauthnChallenge;
+    let adminEmail = req.session.webauthnEmail;
+
+    console.log('Expected challenge from session:', expectedChallenge ? expectedChallenge.substring(0, 20) + '...' : 'NULL');
+    console.log('Admin email from session:', adminEmail);
+
+    // Final validation of session data
+    if (!expectedChallenge || !adminEmail) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Authentication session expired or not found',
+        code: 'SESSION_EXPIRED'
+      });
+    }
+
+    // Find admin
+    const admin = await Admin.findOne({ email: adminEmail });
+    if (!admin) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Admin not found',
+        code: 'ADMIN_NOT_FOUND'
+      });
+    }
+
+    // Validate credential ID format
+    if (!credential.id || !isValidBase64url(credential.id)) {
+      console.error('Invalid credential ID format:', credential.id);
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid credential ID format',
+        code: 'INVALID_CREDENTIAL_ID'
+      });
+    }
+
+    // Prepare credential data for verification - MATCHING OLD CODE FORMAT
+    const verification = await verifyRegistrationResponse({
+      response: {
+        id: credential.id,
+        rawId: base64urlToBuffer(credential.rawId),
+        response: {
+          attestationObject: base64urlToBuffer(credential.response.attestationObject),
+          clientDataJSON: base64urlToBuffer(credential.response.clientDataJSON)
+        },
+        type: credential.type,
+        clientExtensionResults: credential.clientExtensionResults || {},
+        authenticatorAttachment: credential.authenticatorAttachment
+      },
+      expectedChallenge: expectedChallenge, // Use string directly like old code
+      expectedOrigin: origin,
+      expectedRPID: rpID,
+      requireUserVerification: true
+    });
+
+    if (!verification.verified || !verification.registrationInfo) {
+      console.error('Verification failed:', verification.verificationError);
+      return res.status(400).json({ 
+        success: false,
+        error: 'Registration verification failed',
+        code: 'VERIFICATION_FAILED',
+        details: verification.verificationError?.message
+      });
+    }
+
+    // Save credential
+    const { credentialPublicKey, credentialID, counter } = verification.registrationInfo;
     
-    res.json(sessionInfo);
+    admin.webauthnCredentials.push({
+      credentialID: bufferToBase64url(credentialID),
+      credentialPublicKey: bufferToBase64url(credentialPublicKey),
+      counter,
+      deviceName: deviceName || 'Unknown Device',
+      deviceType: 'platform',
+      addedAt: new Date()
+    });
+
+    await admin.save();
+
+    // Clear session
+    req.session.webauthnChallenge = null;
+    req.session.webauthnEmail = null;
+    await req.session.save();
+
+    res.json({ 
+      success: true, 
+      message: 'Security key registered successfully' 
+    });
+
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error verifying registration:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to verify registration',
+      code: 'VERIFICATION_ERROR',
+      details: err.message 
+    });
   }
 });
-
 
 // Generate authentication options
 app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimit, async (req, res) => {
@@ -1360,176 +1427,7 @@ app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimi
   }
 });
 
-// Verify registration
-// Verify registration
-app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnRateLimit, async (req, res) => {
-  try {
-    const { credential, deviceName, sessionId } = req.body;
-
-    console.log('=== WEB AUTHN VERIFICATION STARTED ===');
-    console.log('Session ID from request:', sessionId);
-    console.log('Session ID from session:', req.sessionID);
-
-    // Try to get challenge from session first
-    let expectedChallenge = req.session.webauthnChallenge;
-    let adminEmail = req.session.webauthnEmail;
-
-    console.log('Expected challenge from session:', expectedChallenge ? expectedChallenge.substring(0, 20) + '...' : 'NULL');
-    console.log('Admin email from session:', adminEmail);
-
-    // If challenge not found in current session, try to restore from provided sessionId
-    if (!expectedChallenge && sessionId) {
-      console.log('Challenge not found in current session, attempting to restore from sessionId');
-      
-      try {
-        const MongoStore = require('connect-mongo')(session);
-        const store = MongoStore.create({
-          mongoUrl: process.env.MONGODB_URI,
-          collectionName: 'webauthn_sessions'
-        });
-
-        const sessionData = await new Promise((resolve, reject) => {
-          store.get(sessionId, (err, session) => {
-            if (err) {
-              console.error('Failed to get session from store:', err);
-              resolve(null);
-            } else {
-              resolve(session);
-            }
-          });
-        });
-
-        if (sessionData && sessionData.webauthnChallenge) {
-          console.log('Session restored successfully from store');
-          expectedChallenge = sessionData.webauthnChallenge;
-          adminEmail = sessionData.webauthnEmail;
-          
-          // Restore session data
-          req.session.webauthnChallenge = sessionData.webauthnChallenge;
-          req.session.webauthnEmail = sessionData.webauthnEmail;
-          req.session.webauthnTimestamp = sessionData.webauthnTimestamp;
-          
-          // Save the restored session
-          await new Promise((resolve, reject) => {
-            req.session.save((err) => {
-              if (err) reject(err);
-              else resolve();
-            });
-          });
-        }
-      } catch (restoreError) {
-        console.error('Session restoration error:', restoreError);
-      }
-    }
-
-    // Final validation of session data
-    if (!expectedChallenge || !adminEmail) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Authentication session expired or not found',
-        code: 'SESSION_EXPIRED',
-        details: {
-          hasExpectedChallenge: !!expectedChallenge,
-          hasAdminEmail: !!adminEmail,
-          sessionId: sessionId,
-          sessionKeys: Object.keys(req.session || {}),
-          providedSessionId: !!sessionId
-        }
-      });
-    }
-
-    // Find admin
-    const admin = await Admin.findOne({ email: adminEmail });
-    if (!admin) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'Admin not found',
-        code: 'ADMIN_NOT_FOUND'
-      });
-    }
-
-    // Convert expected challenge back to buffer for verification
-    const expectedChallengeBuffer = base64urlToBuffer(expectedChallenge);
-    
-    // Prepare credential data for verification
-    const credentialData = {
-      id: credential.id,
-      rawId: base64urlToBuffer(credential.rawId),
-      response: {
-        attestationObject: base64urlToBuffer(credential.response.attestationObject),
-        clientDataJSON: base64urlToBuffer(credential.response.clientDataJSON)
-      },
-      type: credential.type,
-      clientExtensionResults: credential.clientExtensionResults || {}
-    };
-
-    console.log('Verifying registration with challenge length:', expectedChallengeBuffer.length);
-
-    // Verify registration
-    const verification = await verifyRegistrationResponse({
-      response: credentialData,
-      expectedChallenge: expectedChallengeBuffer,
-      expectedOrigin: origin,
-      expectedRPID: rpID,
-      requireUserVerification: true
-    });
-
-    if (!verification.verified || !verification.registrationInfo) {
-      console.error('Verification failed:', verification.verificationError);
-      return res.status(400).json({ 
-        success: false,
-        error: 'Registration verification failed',
-        code: 'VERIFICATION_FAILED',
-        details: verification.verificationError?.message
-      });
-    }
-
-    // Save credential
-    const { credentialPublicKey, credentialID, counter } = verification.registrationInfo;
-    
-    admin.webauthnCredentials.push({
-      credentialID: bufferToBase64url(credentialID),
-      credentialPublicKey: bufferToBase64url(credentialPublicKey),
-      counter,
-      deviceName: deviceName || 'Unknown Device',
-      deviceType: 'platform',
-      addedAt: new Date()
-    });
-
-    await admin.save();
-
-    // Clear session
-    req.session.webauthnChallenge = null;
-    req.session.webauthnEmail = null;
-    await req.session.save();
-
-    res.json({ 
-      success: true, 
-      message: 'Security key registered successfully' 
-    });
-
-  } catch (err) {
-    console.error('Error verifying registration:', err);
-    res.status(500).json({ 
-      success: false,
-      error: 'Failed to verify registration',
-      code: 'VERIFICATION_ERROR',
-      details: err.message 
-    });
-  }
-});
-
-app.get('/api/debug/session', authenticateAdmin, (req, res) => {
-  res.json({
-    sessionId: req.sessionID,
-    challenge: req.session.webauthnChallenge,
-    email: req.session.webauthnEmail,
-    timestamp: req.session.webauthnTimestamp
-  });
-});
-
-
-// Verify authentication
+// Verify authentication - FIXED VERSION
 app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (req, res) => {
   try {
     const { credential } = req.body;
@@ -1689,9 +1587,6 @@ app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (
   }
 });
 
-
-
-
 // Get admin's WebAuthn credentials
 app.get('/api/admin/webauthn/credentials', authenticateAdmin, async (req, res) => {
   try {
@@ -1712,6 +1607,107 @@ app.get('/api/admin/webauthn/credentials', authenticateAdmin, async (req, res) =
   } catch (err) {
     console.error('Error fetching credentials:', err);
     res.status(500).json({ error: 'Failed to fetch credentials' });
+  }
+});
+
+// Check if admin has WebAuthn credentials - FIXED VERSION
+app.post('/api/admin/webauthn/check-credentials', authenticateAdmin, async (req, res) => {
+  try {
+    const admin = req.admin; // Now contains the full admin document
+    if (!admin) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Admin not found',
+        code: 'ADMIN_NOT_FOUND'
+      });
+    }
+
+    // Check if admin has WebAuthn credentials
+    const hasWebAuthn = admin.webauthnCredentials.length > 0;
+    
+    console.log(`Checking WebAuthn credentials for ${admin.email}: ${hasWebAuthn ? 'Found' : 'Not found'} (${admin.webauthnCredentials.length} credentials)`);
+    
+    res.json({
+      success: true,
+      hasWebAuthn
+    });
+  } catch (err) {
+    console.error('Error checking WebAuthn credentials:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to check credentials',
+      code: 'CHECK_FAILED'
+    });
+  }
+});
+
+// Add this endpoint to your bookings backend
+app.post('/api/admin/webauthn/check-credentials-with-users-token', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ 
+        error: 'Invalid authorization format',
+        code: 'INVALID_AUTH_FORMAT'
+      });
+    }
+
+    const usersToken = authHeader.split(' ')[1];
+    
+    if (!usersToken) {
+      return res.status(401).json({ 
+        error: 'Token missing',
+        code: 'TOKEN_MISSING'
+      });
+    }
+
+    // Verify the token using the same secret as the users backend
+    const decoded = jwt.verify(usersToken, process.env.JWT_SECRET);
+    
+    if (!decoded.email || decoded.role !== 'admin') {
+      return res.status(401).json({ 
+        error: 'Invalid token',
+        code: 'INVALID_TOKEN'
+      });
+    }
+    
+    // Find the admin in the bookings database
+    const admin = await Admin.findOne({ email: decoded.email });
+    if (!admin) {
+      return res.status(404).json({ 
+        error: 'Admin not found',
+        code: 'ADMIN_NOT_FOUND'
+      });
+    }
+
+    const hasWebAuthn = admin.webauthnCredentials.length > 0;
+    
+    res.json({
+      success: true,
+      hasWebAuthn
+    });
+  } catch (err) {
+    console.error('Error checking WebAuthn credentials with users token:', err);
+    let statusCode = 500;
+    let errorCode = 'CHECK_FAILED';
+    let errorMessage = 'Failed to check credentials';
+
+    if (err.name === 'TokenExpiredError') {
+      statusCode = 401;
+      errorCode = 'TOKEN_EXPIRED';
+      errorMessage = 'Token has expired';
+    } else if (err.name === 'JsonWebTokenError') {
+      statusCode = 401;
+      errorCode = 'INVALID_TOKEN';
+      errorMessage = 'Invalid token';
+    }
+
+    res.status(statusCode).json({ 
+      error: errorMessage,
+      code: errorCode,
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
   }
 });
 
@@ -5321,4 +5317,5 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
