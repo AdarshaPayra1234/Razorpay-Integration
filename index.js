@@ -85,7 +85,15 @@ function uint8ArrayToBase64url(input) {
       .replace(/=/g, '');
   }
   
-  throw new Error('Expected Uint8Array, Buffer, or string, got ' + typeof input);
+  // Handle string input (assume it's already base64url)
+  if (typeof input === 'string') {
+    if (!isValidBase64url(input)) {
+      throw new Error('String input is not valid base64url');
+    }
+    return input;
+  }
+  
+  throw new Error('Expected Uint8Array, Buffer, Array, or string, got ' + typeof input);
 }
 
 // Add this function to convert base64url to buffer
@@ -860,7 +868,7 @@ app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) =
     // Generate JWT token
     // In users backend login route
 const token = jwt.sign(
-  { email: user.email, role: 'admin' },
+  { email: admin.email, role: 'admin' },
   process.env.JWT_SECRET,  // Same secret as bookings backend
   { expiresIn: '8h' }
 );
@@ -1195,12 +1203,11 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
         userVerification: 'preferred',
         authenticatorAttachment: 'platform'
       },
-      timeout: 60000,
-      challenges: '1200000000000000000000000000000000000000000' // Add this line
+      timeout: 60000
     });
 
     // Store challenge in session
-    req.session.webauthnChallenge = options.challenge;
+    req.session.webauthnChallenge = bufferToBase64url(Buffer.from(options.challenge));
     req.session.webauthnEmail = admin.email;
     req.session.webauthnTimestamp = Date.now();
 
@@ -1212,7 +1219,7 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
 
     res.json({
       ...options,
-      challenge: bufferToBase64url(Buffer.from(options.challenge, 'base64')),
+      challenge: bufferToBase64url(Buffer.from(options.challenge)),
       user: {
         ...options.user,
         id: bufferToBase64url(options.user.id)
@@ -1287,7 +1294,7 @@ app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimi
 
     // Properly format allowCredentials
     const allowCredentials = admin.webauthnCredentials.map(cred => ({
-      id: Buffer.from(cred.credentialID, 'base64'),
+      id: base64urlToBuffer(cred.credentialID),
       type: 'public-key'
     }));
 
@@ -1299,9 +1306,9 @@ app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimi
     });
 
     // Store the challenge and email in the session
-    req.session.webauthnChallenge = uint8ArrayToBase64url(options.challenge);
-
+    req.session.webauthnChallenge = bufferToBase64url(Buffer.from(options.challenge));
     req.session.webauthnEmail = email;
+    req.session.webauthnTimestamp = Date.now();
 
     // Ensure session is saved
     await new Promise((resolve, reject) => {
@@ -1319,7 +1326,7 @@ app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimi
     // Convert challenge to base64url for client
     res.json({
       ...options,
-      challenge: uint8ArrayToBase64url(options.challenge)
+      challenge: bufferToBase64url(Buffer.from(options.challenge))
     });
   } catch (err) {
     console.error('Error generating authentication options:', err);
@@ -1374,7 +1381,7 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
         clientExtensionResults: credential.clientExtensionResults || {},
         authenticatorAttachment: credential.authenticatorAttachment
       },
-      expectedChallenge: expectedChallenge,
+      expectedChallenge: base64urlToBuffer(expectedChallenge),
       expectedOrigin: origin,
       expectedRPID: rpID,
       requireUserVerification: true
@@ -1442,13 +1449,12 @@ app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (
 
     // ===== INPUT VALIDATION ===== //
     if (!credential || !credential.id || !credential.response) {
-  return res.status(400).json({ 
-    success: false,
-    error: 'Invalid credential data structure',
-    code: 'INVALID_CREDENTIAL_STRUCTURE'
-  });
-}
-
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid credential data structure',
+        code: 'INVALID_CREDENTIAL_STRUCTURE'
+      });
+    }
 
     // Validate base64url encoding for all required fields
     const requiredAuthFields = [
@@ -1481,17 +1487,23 @@ app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (
     // ===== SESSION VALIDATION ===== //
     const expectedChallenge = req.session.webauthnChallenge;
     const adminEmail = req.session.webauthnEmail;
+    const challengeTimestamp = req.session.webauthnTimestamp;
+
+    // Clear session immediately to prevent replay attacks
+    req.session.webauthnChallenge = null;
+    req.session.webauthnEmail = null;
+    req.session.webauthnTimestamp = null;
+    await req.session.save();
 
     if (!expectedChallenge || !adminEmail) {
       return res.status(400).json({ 
         success: false,
-        error: 'Authentication session expired',
+        error: 'Authentication session expired or not found',
         code: 'SESSION_EXPIRED'
       });
     }
 
-    // Check if challenge is too old
-    const challengeTimestamp = req.session.webauthnTimestamp;
+    // Check if challenge is too old (2 minutes)
     if (!challengeTimestamp || (Date.now() - challengeTimestamp > 2 * 60 * 1000)) {
       return res.status(400).json({ 
         success: false,
@@ -1563,11 +1575,6 @@ app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (
     // Update counter
     storedCredential.counter = verification.authenticationInfo.newCounter;
     await admin.save();
-
-    // Clear session
-    req.session.webauthnChallenge = null;
-    req.session.webauthnEmail = null;
-    await req.session.save();
 
     // Generate JWT token
     const token = jwt.sign(
@@ -5225,7 +5232,3 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
-
-
-
-
