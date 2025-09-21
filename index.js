@@ -217,9 +217,10 @@ app.use(cookieParser());
 // Session middleware configuration for production
 // Enhanced session configuration
 // Enhanced session configuration - Replace existing session config
+// Enhanced session configuration
 app.use(session({
   secret: process.env.SESSION_SECRET || 'your-webauthn-session-secret-key',
-  resave: false,
+  resave: true, // Changed from false to true to ensure session is saved
   saveUninitialized: false,
   cookie: {
     secure: process.env.NODE_ENV === 'production',
@@ -231,24 +232,39 @@ app.use(session({
   store: MongoStore.create({
     mongoUrl: process.env.MONGODB_URI,
     collectionName: 'webauthn_sessions',
-    ttl: 24 * 60 * 60,
-    autoRemove: 'native'
+    ttl: 24 * 60 * 60, // 24 hours
+    autoRemove: 'native',
+    // Add connection error handling
+    autoRemoveInterval: 10, // Remove expired sessions every 10 minutes
+    touchAfter: 24 * 3600 // Time period in seconds
   }),
   name: 'webauthn.sid',
   rolling: true,
-  proxy: true
+  proxy: true,
+  // Add unset to preserve session on logout
+  unset: 'keep'
 }));
 
 // Add session debugging middleware
 app.use((req, res, next) => {
-  console.log('Session debug:', {
+  console.log('Session status:', {
     sessionId: req.sessionID,
-    hasChallenge: !!req.session.webauthnChallenge,
-    challenge: req.session.webauthnChallenge ? 
-      req.session.webauthnChallenge.substring(0, 20) + '...' : null,
-    hasEmail: !!req.session.webauthnEmail
+    hasSession: !!req.session,
+    sessionKeys: req.session ? Object.keys(req.session) : []
   });
   next();
+});
+
+// Add session error handling
+app.use((err, req, res, next) => {
+  if (err.code === 'NSERR_SESSION_NOT_SAVED') {
+    console.error('Session save error:', err);
+    return res.status(500).json({ 
+      error: 'Session storage error', 
+      code: 'SESSION_ERROR' 
+    });
+  }
+  next(err);
 });
 
 // WebAuthn configuration
@@ -1199,38 +1215,41 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
     });
 
     // Store challenge in session
-    req.session.webauthnChallenge = options.challenge;
-    req.session.webauthnEmail = admin.email;
-    req.session.webauthnTimestamp = Date.now();
+    // Store challenge in session with proper error handling
+req.session.webauthnChallenge = options.challenge;
+req.session.webauthnEmail = admin.email;
+req.session.webauthnTimestamp = Date.now();
 
-    await new Promise((resolve, reject) => {
-      req.session.save(err => err ? reject(err) : resolve());
+// Save session with error handling
+try {
+  await new Promise((resolve, reject) => {
+    req.session.save((err) => {
+      if (err) {
+        console.error('Failed to save session:', err);
+        reject(err);
+      } else {
+        console.log('Session saved successfully with challenge');
+        // Verify session was actually saved by checking store
+        req.sessionStore.get(req.sessionID, (storeErr, sessionData) => {
+          if (storeErr) {
+            console.error('Error verifying session storage:', storeErr);
+          } else if (sessionData && sessionData.webauthnChallenge) {
+            console.log('Session verified in store, challenge exists');
+          } else {
+            console.warn('Session not found in store or missing challenge');
+          }
+          resolve();
+        });
+      }
     });
-
-    console.log('Session saved with challenge');
-
-    res.json({
-      ...options,
-      challenge: bufferToBase64url(Buffer.from(options.challenge, 'base64')),
-      user: {
-        ...options.user,
-        id: bufferToBase64url(options.user.id)
-      },
-      excludeCredentials: options.excludeCredentials.map(cred => ({
-        ...cred,
-        id: bufferToBase64url(cred.id)
-      }))
-    });
-
-  } catch (err) {
-    console.error('Error generating registration options:', err);
-    res.status(500).json({ 
-      error: 'Failed to generate registration options',
-      code: 'GENERATION_FAILED',
-      details: err.message 
-    });
-  }
-});
+  });
+} catch (saveError) {
+  console.error('Critical session save error:', saveError);
+  return res.status(500).json({ 
+    error: 'Failed to save authentication session',
+    code: 'SESSION_SAVE_ERROR'
+  });
+}
 
 
 // ===== Debug Routes ===== //
@@ -1337,16 +1356,68 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
     const { credential, deviceName } = req.body;
 
     console.log('=== WEB AUTHN VERIFICATION STARTED ===');
+    console.log('Session on verification request:', {
+      sessionId: req.sessionID,
+      hasChallenge: !!req.session.webauthnChallenge,
+      hasEmail: !!req.session.webauthnEmail
+    });
 
-    // Session validation
-    const expectedChallenge = req.session.webauthnChallenge;
-    const adminEmail = req.session.webauthnEmail;
+    // ===== SESSION VALIDATION ===== //
+    let expectedChallenge = req.session.webauthnChallenge;
+    let adminEmail = req.session.webauthnEmail;
+
+    // If challenge not found in current session, try to restore from store
+    if (!expectedChallenge && req.sessionID) {
+      console.log('Attempting to restore session from store...');
+      try {
+        const sessionData = await new Promise((resolve, reject) => {
+          req.sessionStore.get(req.sessionID, (err, session) => {
+            if (err) {
+              console.error('Session store access error:', err);
+              reject(err);
+            } else {
+              resolve(session);
+            }
+          });
+        });
+
+        if (sessionData) {
+          console.log('Session data from store:', {
+            hasChallenge: !!sessionData.webauthnChallenge,
+            hasEmail: !!sessionData.webauthnEmail,
+            timestamp: sessionData.webauthnTimestamp
+          });
+
+          if (sessionData.webauthnChallenge && sessionData.webauthnEmail) {
+            expectedChallenge = sessionData.webauthnChallenge;
+            adminEmail = sessionData.webauthnEmail;
+            
+            // Restore to current session
+            req.session.webauthnChallenge = expectedChallenge;
+            req.session.webauthnEmail = adminEmail;
+            req.session.webauthnTimestamp = sessionData.webauthnTimestamp || Date.now();
+
+            console.log('Session restored successfully from store');
+          }
+        }
+      } catch (restoreError) {
+        console.error('Session restoration failed:', restoreError);
+        // Continue with normal flow, we'll check if we have the data now
+      }
+    }
 
     if (!expectedChallenge || !adminEmail) {
+      console.error('Missing session data after restoration attempt:', {
+        hasChallenge: !!expectedChallenge,
+        hasEmail: !!adminEmail,
+        sessionId: req.sessionID
+      });
+      
       return res.status(400).json({ 
         success: false,
-        error: 'Authentication session expired',
-        code: 'SESSION_EXPIRED'
+        error: 'Authentication session expired or corrupted',
+        code: 'SESSION_EXPIRED',
+        details: 'Please start the registration process again'
       });
     }
 
@@ -1429,6 +1500,49 @@ app.get('/api/debug/session', authenticateAdmin, (req, res) => {
     email: req.session.webauthnEmail,
     timestamp: req.session.webauthnTimestamp
   });
+});
+
+    // Add session health check endpoint
+app.get('/api/admin/session-health', authenticateAdmin, async (req, res) => {
+  try {
+    const sessionInfo = {
+      sessionId: req.sessionID,
+      sessionData: {
+        webauthnChallenge: !!req.session.webauthnChallenge,
+        webauthnEmail: !!req.session.webauthnEmail,
+        webauthnTimestamp: req.session.webauthnTimestamp,
+        allKeys: Object.keys(req.session)
+      }
+    };
+
+    // Check if session exists in store
+    const storeData = await new Promise((resolve) => {
+      req.sessionStore.get(req.sessionID, (err, session) => {
+        if (err) {
+          resolve({ error: err.message });
+        } else {
+          resolve({
+            exists: !!session,
+            challengeInStore: session ? !!session.webauthnChallenge : false,
+            emailInStore: session ? !!session.webauthnEmail : false
+          });
+        }
+      });
+    });
+
+    res.json({
+      success: true,
+      sessionInfo,
+      storeInfo: storeData,
+      storeType: req.sessionStore.constructor.name
+    });
+  } catch (error) {
+    console.error('Session health check error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Session health check failed' 
+    });
+  }
 });
 
 
@@ -5133,6 +5247,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
