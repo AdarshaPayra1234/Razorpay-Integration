@@ -92,6 +92,7 @@ function uint8ArrayToBase64url(input) {
 // Improved base64url to buffer conversion
 // Enhanced base64url to buffer conversion
 // Around line 100-150
+// Replace existing base64urlToBuffer function
 function base64urlToBuffer(base64urlString) {
   if (!base64urlString || typeof base64urlString !== 'string') {
     throw new Error('Invalid base64url string');
@@ -108,6 +109,7 @@ function base64urlToBuffer(base64urlString) {
   return Buffer.from(base64, 'base64');
 }
 
+// Replace existing bufferToBase64url function  
 function bufferToBase64url(buffer) {
   if (!Buffer.isBuffer(buffer)) {
     throw new Error('Expected Buffer');
@@ -117,6 +119,13 @@ function bufferToBase64url(buffer) {
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=/g, '');
+}
+
+// Add this new validation function
+function isValidBase64url(str) {
+  if (typeof str !== 'string') return false;
+  const base64urlRegex = /^[A-Za-z0-9_-]+$/;
+  return base64urlRegex.test(str) && str.length % 4 !== 1;
 }
   
   // Handle string input (base64url)
@@ -207,6 +216,7 @@ app.use(cookieParser());
 
 // Session middleware configuration for production
 // Enhanced session configuration
+// Enhanced session configuration - Replace existing session config
 app.use(session({
   secret: process.env.SESSION_SECRET || 'your-webauthn-session-secret-key',
   resave: false,
@@ -226,23 +236,17 @@ app.use(session({
   }),
   name: 'webauthn.sid',
   rolling: true,
-  proxy: true // Trust the reverse proxy if present
+  proxy: true
 }));
 
-// ADD this middleware after session setup:
-// Debug middleware for cookies
+// Add session debugging middleware
 app.use((req, res, next) => {
-  console.log('Request received:', {
-    method: req.method,
-    url: req.url,
-    cookies: req.cookies,
+  console.log('Session debug:', {
     sessionId: req.sessionID,
-    hasSession: !!req.session,
-    sessionData: req.session ? {
-      hasChallenge: !!req.session.webauthnChallenge,
-      hasEmail: !!req.session.webauthnEmail,
-      timestamp: req.session.webauthnTimestamp
-    } : null
+    hasChallenge: !!req.session.webauthnChallenge,
+    challenge: req.session.webauthnChallenge ? 
+      req.session.webauthnChallenge.substring(0, 20) + '...' : null,
+    hasEmail: !!req.session.webauthnEmail
   });
   next();
 });
@@ -1129,75 +1133,55 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
     const admin = req.admin;
     console.log('Admin found:', admin.email);
 
-    // Convert the admin ID to Uint8Array for the userID
-    const adminIdString = admin._id.toString();
-    const userID = new TextEncoder().encode(adminIdString);
-
-    // Properly format excludeCredentials
-    const excludeCredentials = admin.webauthnCredentials.map(cred => ({
-      id: base64urlToBuffer(cred.credentialID), // ensure base64url is supported
-      type: 'public-key'
-    }));
-
     // Generate registration options
     const options = await generateRegistrationOptions({
-  rpName: 'Joker Creation Admin Panel',
-  rpID,
-  userID,              // Uint8Array
-  userName: admin.email,
-  excludeCredentials,
-  authenticatorSelection: {
-    authenticatorAttachment: 'platform',
-    userVerification: 'required'
+      rpName: 'Joker Creation Admin Panel',
+      rpID: rpID,
+      userID: Buffer.from(admin._id.toString()),
+      userName: admin.email,
+      userDisplayName: admin.email,
+      attestationType: 'direct',
+      authenticatorSelection: {
+        residentKey: 'preferred',
+        userVerification: 'preferred',
+        authenticatorAttachment: 'platform'
+      },
+      timeout: 60000,
+      challenges: '1200000000000000000000000000000000000000000' // Add this line
+    });
+
+    // Store challenge in session
+    req.session.webauthnChallenge = options.challenge;
+    req.session.webauthnEmail = admin.email;
+    req.session.webauthnTimestamp = Date.now();
+
+    await new Promise((resolve, reject) => {
+      req.session.save(err => err ? reject(err) : resolve());
+    });
+
+    console.log('Session saved with challenge');
+
+    res.json({
+      ...options,
+      challenge: bufferToBase64url(Buffer.from(options.challenge, 'base64')),
+      user: {
+        ...options.user,
+        id: bufferToBase64url(options.user.id)
+      },
+      excludeCredentials: options.excludeCredentials.map(cred => ({
+        ...cred,
+        id: bufferToBase64url(cred.id)
+      }))
+    });
+
+  } catch (err) {
+    console.error('Error generating registration options:', err);
+    res.status(500).json({ 
+      error: 'Failed to generate registration options',
+      code: 'GENERATION_FAILED',
+      details: err.message 
+    });
   }
-});
-
-// Ensure challenge is properly generated
-if (!options.challenge || options.challenge.length === 0) {
-  const crypto = require('crypto');
-  options.challenge = crypto.randomBytes(32); // 32-byte random challenge
-}
-
-// Store challenge in session
-req.session.webauthnChallenge = uint8ArrayToBase64url(options.challenge);
-req.session.webauthnEmail = admin.email;
-req.session.webauthnTimestamp = Date.now();
-
-await new Promise((resolve, reject) => {
-  req.session.save(err => err ? reject(err) : resolve());
-});
-
-// Convert challenge & IDs to base64url for client
-const responseOptions = {
-  ...options,
-  challenge: uint8ArrayToBase64url(options.challenge),
-  user: {
-    id: uint8ArrayToBase64url(options.user.id),
-    name: options.user.name,
-    displayName: options.user.displayName
-  },
-  excludeCredentials: options.excludeCredentials.map(cred => ({
-    id: uint8ArrayToBase64url(cred.id),
-    type: cred.type,
-    transports: cred.transports || []
-  }))
-};
-
-res.json({
-  ...responseOptions,
-  sessionId: req.sessionID
-});
-
-
-
-} catch (err) {
-  console.error('Error generating registration options:', err);
-  res.status(500).json({ 
-    error: 'Failed to generate registration options',
-    code: 'GENERATION_FAILED',
-    details: err.message 
-  });
-}
 });
 
 
@@ -1302,257 +1286,101 @@ app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimi
 // Verify registration
 app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnRateLimit, async (req, res) => {
   try {
-    const { credential, deviceName, sessionId } = req.body;
+    const { credential, deviceName } = req.body;
 
     console.log('=== WEB AUTHN VERIFICATION STARTED ===');
-    console.log('Credential ID received:', credential?.id);
-    console.log('Credential type:', typeof credential?.id);
 
-    // ===== INPUT VALIDATION ===== //
-    if (!credential || !credential.id || !credential.response) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Invalid credential data structure',
-        code: 'INVALID_CREDENTIAL_STRUCTURE'
-      });
-    }
-
-    // Validate base64url encoding for all required fields
-    const requiredFields = [
-      { field: credential.id, name: 'credential.id' },
-      { field: credential.rawId, name: 'credential.rawId' },
-      { field: credential.response.clientDataJSON, name: 'credential.response.clientDataJSON' },
-      { field: credential.response.attestationObject, name: 'credential.response.attestationObject' }
-    ];
-
-    for (const { field, name } of requiredFields) {
-      if (!field) {
-        return res.status(400).json({ 
-          success: false,
-          error: `Missing required field: ${name}`,
-          code: 'MISSING_REQUIRED_FIELD'
-        });
-      }
-
-      if (!isValidBase64url(field)) {
-        return res.status(400).json({ 
-          success: false,
-          error: `Invalid base64url encoding for ${name}`,
-          code: 'INVALID_BASE64URL_ENCODING',
-          field: name
-        });
-      }
-    }
-
-    // Validate credential type
-    if (credential.type !== 'public-key') {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Invalid credential type',
-        code: 'INVALID_CREDENTIAL_TYPE',
-        details: `Expected 'public-key', got '${credential.type}'`
-      });
-    }
-
-    if (!deviceName || typeof deviceName !== 'string' || deviceName.trim().length === 0) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Device name is required',
-        code: 'MISSING_DEVICE_NAME',
-        details: 'Please provide a valid device name'
-      });
-    }
-
-    // ===== SESSION VALIDATION ===== //
-    let expectedChallenge = req.session.webauthnChallenge;
-    let adminEmail = req.session.webauthnEmail;
-
-    // If challenge not found in current session, try to restore from store
-    if (!expectedChallenge && sessionId) {
-      console.log('Attempting to restore session from store...');
-      try {
-        const sessionData = await new Promise((resolve, reject) => {
-          req.sessionStore.get(sessionId, (err, session) => {
-            if (err) reject(err);
-            else resolve(session);
-          });
-        });
-
-        if (sessionData && sessionData.webauthnChallenge && sessionData.webauthnEmail) {
-          console.log('Session restored successfully');
-          expectedChallenge = sessionData.webauthnChallenge;
-          adminEmail = sessionData.webauthnEmail;
-
-          req.session.webauthnChallenge = sessionData.webauthnChallenge;
-          req.session.webauthnEmail = sessionData.webauthnEmail;
-          req.session.webauthnTimestamp = sessionData.webauthnTimestamp || Date.now();
-
-          await new Promise((resolve, reject) => {
-            req.session.save((err) => {
-              if (err) reject(err);
-              else resolve();
-            });
-          });
-        }
-      } catch (restoreError) {
-        console.error('Session restoration failed:', restoreError);
-      }
-    }
+    // Session validation
+    const expectedChallenge = req.session.webauthnChallenge;
+    const adminEmail = req.session.webauthnEmail;
 
     if (!expectedChallenge || !adminEmail) {
-      console.error('Missing session data:', { hasChallenge: !!expectedChallenge, hasEmail: !!adminEmail });
       return res.status(400).json({ 
         success: false,
         error: 'Authentication session expired',
-        code: 'SESSION_EXPIRED',
-        details: 'Please start the registration process again'
+        code: 'SESSION_EXPIRED'
       });
     }
 
-    // Check if challenge is too old
-    const challengeTimestamp = req.session.webauthnTimestamp;
-    if (!challengeTimestamp || (Date.now() - challengeTimestamp > 2 * 60 * 1000)) {
-      console.error('Challenge expired or missing timestamp:', { timestamp: challengeTimestamp, currentTime: Date.now() });
-      return res.status(400).json({ 
-        success: false,
-        error: 'Challenge expired',
-        code: 'CHALLENGE_EXPIRED',
-        details: 'Please start the registration process again'
-      });
-    }
-
-    console.log('Session validation passed');
-    console.log('Expected challenge (base64url):', expectedChallenge?.substring(0, 20) + '...');
-
-    // ===== ADMIN VALIDATION ===== //
+    // Find admin
     const admin = await Admin.findOne({ email: adminEmail });
     if (!admin) {
       return res.status(404).json({ 
         success: false,
         error: 'Admin not found',
-        code: 'ADMIN_NOT_FOUND',
-        details: 'No admin account found for the provided email'
+        code: 'ADMIN_NOT_FOUND'
       });
     }
-    console.log('Admin found:', admin.email);
 
-    // ===== DATA CONVERSION ===== //
-    console.log('Converting credential data to proper formats...');
-    let credentialIdBuffer, credentialIdString;
-    try {
-      credentialIdString = credential.id;
+    // Verify registration
+    const verification = await verifyRegistrationResponse({
+      response: {
+        id: credential.id,
+        rawId: credential.rawId,
+        response: {
+          attestationObject: credential.response.attestationObject,
+          clientDataJSON: credential.response.clientDataJSON
+        },
+        type: credential.type,
+        clientExtensionResults: credential.clientExtensionResults || {},
+        authenticatorAttachment: credential.authenticatorAttachment
+      },
+      expectedChallenge: expectedChallenge,
+      expectedOrigin: origin,
+      expectedRPID: rpID,
+      requireUserVerification: true
+    });
 
-      if (typeof credential.rawId === 'string') {
-        credentialIdBuffer = base64urlToBuffer(credential.rawId);
-      } else if (credential.rawId instanceof ArrayBuffer || credential.rawId instanceof Uint8Array) {
-        credentialIdBuffer = credential.rawId instanceof Uint8Array ? credential.rawId : new Uint8Array(credential.rawId);
-      } else throw new Error('Invalid credential.rawId format');
-
-      console.log('Credential ID validation:', { id: credentialIdString, isValid: isValidBase64url(credentialIdString), length: credentialIdString.length });
-
-      if (!isValidBase64url(credentialIdString)) throw new Error('Credential ID is not valid base64url');
-      if (credentialIdBuffer.length < 16 || credentialIdBuffer.length > 1024) throw new Error('Credential ID has invalid length');
-
-      console.log('Credential ID validation passed');
-    } catch (conversionError) {
-      console.error('Credential ID conversion error:', conversionError);
+    if (!verification.verified || !verification.registrationInfo) {
       return res.status(400).json({ 
         success: false,
-        error: 'Invalid credential ID format',
-        code: 'INVALID_CREDENTIAL_ID',
-        details: conversionError.message
+        error: 'Registration verification failed',
+        code: 'VERIFICATION_FAILED'
       });
     }
 
-    // ===== RESPONSE DATA CONVERSION ===== //
-    try {
-      console.log('Converting response data...');
-      const clientDataJSONBuffer = base64urlToBuffer(credential.response.clientDataJSON);
-      const attestationObjectBuffer = base64urlToBuffer(credential.response.attestationObject);
-      const expectedChallengeBuffer = base64urlToBuffer(expectedChallenge);
+    // Save credential
+    const { credentialPublicKey, credentialID, counter } = verification.registrationInfo;
+    
+    admin.webauthnCredentials.push({
+      credentialID: bufferToBase64url(credentialID),
+      credentialPublicKey: bufferToBase64url(credentialPublicKey),
+      counter,
+      deviceName: deviceName || 'Unknown Device',
+      deviceType: 'platform',
+      addedAt: new Date()
+    });
 
-      console.log('Client data length:', clientDataJSONBuffer.length);
-      console.log('Attestation object length:', attestationObjectBuffer.length);
-      console.log('Expected challenge buffer length:', expectedChallengeBuffer.length);
+    await admin.save();
 
-      const response = {
-        id: credentialIdString,
-        rawId: credentialIdBuffer,
-        response: { clientDataJSON: clientDataJSONBuffer, attestationObject: attestationObjectBuffer },
-        type: credential.type || 'public-key',
-        clientExtensionResults: credential.clientExtensionResults || {}
-      };
-      console.log('Credential data conversion completed');
+    // Clear session
+    req.session.webauthnChallenge = null;
+    req.session.webauthnEmail = null;
+    await req.session.save();
 
-      // Parse clientDataJSON for challenge validation
-      let clientDataJSON;
-      try {
-        clientDataJSON = JSON.parse(clientDataJSONBuffer.toString('utf-8'));
-      } catch (parseError) {
-        console.error('Failed to parse clientDataJSON:', parseError);
-        return res.status(400).json({ success: false, error: 'Invalid clientDataJSON', code: 'CLIENT_DATA_JSON_PARSE_ERROR', details: parseError.message });
-      }
+    res.json({ 
+      success: true, 
+      message: 'Security key registered successfully' 
+    });
 
-      console.log('Client challenge:', clientDataJSON.challenge);
-      console.log('Expected challenge:', expectedChallenge);
-
-      if (clientDataJSON.challenge !== expectedChallenge) {
-        console.error('Challenge mismatch!');
-        throw new Error('Challenge mismatch');
-      }
-
-      // ===== VERIFICATION ===== //
-      console.log('Starting registration verification...');
-      const verification = await verifyRegistrationResponse({
-        response,
-        expectedChallenge: expectedChallengeBuffer,
-        expectedOrigin: origin,
-        expectedRPID: rpID,
-        requireUserVerification: true
-      });
-
-      console.log('Verification completed:', { verified: verification.verified, hasRegistrationInfo: !!verification.registrationInfo });
-
-      if (!verification.verified || !verification.registrationInfo) {
-        console.error('Verification failed:', verification);
-        return res.status(400).json({ success: false, error: 'Registration verification failed', code: 'VERIFICATION_FAILED', details: verification.verificationError?.message || 'Unknown verification error' });
-      }
-
-      const { credentialPublicKey, credentialID, counter } = verification.registrationInfo;
-      const credentialIDBase64 = bufferToBase64url(credentialID);
-      const credentialPublicKeyBase64 = bufferToBase64url(credentialPublicKey);
-
-      const existingCredential = admin.webauthnCredentials.find(cred => cred.credentialID === credentialIDBase64);
-      if (existingCredential) return res.status(400).json({ success: false, error: 'This security key is already registered', code: 'CREDENTIAL_EXISTS' });
-
-      admin.webauthnCredentials.push({
-        credentialID: credentialIDBase64,
-        credentialPublicKey: credentialPublicKeyBase64,
-        counter,
-        deviceType: 'platform',
-        deviceName: deviceName.trim(),
-        addedAt: new Date()
-      });
-      await admin.save();
-      console.log('Credential saved successfully');
-
-      // ===== CLEANUP ===== //
-      req.session.webauthnChallenge = null;
-      req.session.webauthnEmail = null;
-      await new Promise((resolve, reject) => req.session.save(err => err ? reject(err) : resolve()));
-
-      console.log('=== WEB AUTHN REGISTRATION COMPLETED SUCCESSFULLY ===');
-      res.json({ success: true, message: 'Security key registered successfully', credential: { deviceName: deviceName.trim(), deviceType: 'platform', addedAt: new Date().toISOString() } });
-
-    } catch (verificationError) {
-      console.error('❌ CRITICAL ERROR in verification:', verificationError);
-      res.status(500).json({ success: false, error: 'Failed to verify registration', code: 'VERIFICATION_ERROR', details: verificationError.message });
-    }
-
-  } catch (outerError) {
-    console.error('❌ CRITICAL ROUTE ERROR:', outerError);
-    res.status(500).json({ success: false, error: 'Server error', code: 'SERVER_ERROR', details: outerError.message });
+  } catch (err) {
+    console.error('Error verifying registration:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to verify registration',
+      code: 'VERIFICATION_ERROR',
+      details: err.message 
+    });
   }
+});
+
+app.get('/api/debug/session', authenticateAdmin, (req, res) => {
+  res.json({
+    sessionId: req.sessionID,
+    challenge: req.session.webauthnChallenge,
+    email: req.session.webauthnEmail,
+    timestamp: req.session.webauthnTimestamp
+  });
 });
 
 
@@ -5256,6 +5084,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
