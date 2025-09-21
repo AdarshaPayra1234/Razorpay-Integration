@@ -48,17 +48,18 @@ console.log('SimpleWebAuthn imported:', {
 
 // ADD THE FUNCTION HERE - after requires, before routes
 // Replace the uint8ArrayToBase64url function with this improved version
-function uint8ArrayToBase64url(input) {
+// Enhanced bufferToBase64url conversion function
+function bufferToBase64url(input) {
   // If it's already a string (base64url), return it as is
   if (typeof input === 'string') {
-    return input;
+    // Validate it's a proper base64url string
+    if (isValidBase64url(input)) {
+      return input;
+    } else {
+      throw new Error('Input string is not valid base64url');
+    }
   }
   
-  if (!input) {
-    throw new Error('Input is undefined');
-  }
-  
-  // Handle Buffer objects
   if (Buffer.isBuffer(input)) {
     return input.toString('base64')
       .replace(/\+/g, '-')
@@ -66,7 +67,6 @@ function uint8ArrayToBase64url(input) {
       .replace(/=/g, '');
   }
   
-  // Handle Uint8Array
   if (input instanceof Uint8Array) {
     return Buffer.from(input)
       .toString('base64')
@@ -75,8 +75,7 @@ function uint8ArrayToBase64url(input) {
       .replace(/=/g, '');
   }
   
-  // Handle other array-like objects
-  if (Array.isArray(input) || input.length !== undefined) {
+  if (Array.isArray(input)) {
     const uint8Array = new Uint8Array(input);
     return Buffer.from(uint8Array)
       .toString('base64')
@@ -85,7 +84,7 @@ function uint8ArrayToBase64url(input) {
       .replace(/=/g, '');
   }
   
-  throw new Error('Expected Uint8Array, Buffer, or string, got ' + typeof input);
+  throw new Error('Expected Buffer, Uint8Array, Array, or base64url string, got: ' + typeof input);
 }
 
 // Add this function to convert base64url to buffer
@@ -1261,11 +1260,10 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
         id: bufferToBase64url(options.user.id)
       },
       excludeCredentials: options.excludeCredentials.map(cred => ({
-        id: bufferToBase64url(cred.id),
-        type: cred.type,
-        transports: cred.transports || ['internal']
-      }))
-    };
+  id: bufferToBase64url(cred.id),
+  type: cred.type,
+  transports: cred.transports || []
+}))
 
     res.json({
       ...responseOptions,
@@ -5392,5 +5390,6 @@ initializeAdmin().then(() => {
   process.exit(1);
 
 });
+
 
 
