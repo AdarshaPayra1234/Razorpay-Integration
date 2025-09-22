@@ -52,125 +52,90 @@ console.log('SimpleWebAuthn imported:', {
 // ===== ENHANCED BASE64URL UTILITIES (FIXED VERSION) =====
 
 // Enhanced base64url to buffer conversion - FIXED
+// ===== SIMPLE BASE64URL UTILITIES (WORKS WITH ALL WEBAUTHN FUNCTIONS) =====
+
+// Simple base64url to buffer conversion
 function base64urlToBuffer(base64urlString) {
-  console.log('base64urlToBuffer input:', {
-    type: typeof base64urlString,
-    length: base64urlString?.length,
-    first20: base64urlString?.substring(0, 20) + '...'
-  });
-  
   if (!base64urlString || typeof base64urlString !== 'string') {
-    throw new Error('Invalid base64url string: ' + typeof base64urlString);
-  }
-  
-  // Remove any whitespace
-  const cleanString = base64urlString.trim();
-  
-  // Validate it's a proper base64url string
-  if (!isValidBase64url(cleanString)) {
-    throw new Error('Invalid base64url format: ' + cleanString.substring(0, 20) + '...');
+    throw new Error('Invalid base64url string');
   }
   
   // Convert base64url to base64
-  let base64 = cleanString.replace(/-/g, '+').replace(/_/g, '/');
+  let base64 = base64urlString.replace(/-/g, '+').replace(/_/g, '/');
   
-  // Add padding if needed (more robust padding calculation)
-  const paddingNeeded = (4 - (base64.length % 4)) % 4;
-  if (paddingNeeded > 0) {
-    base64 += '='.repeat(paddingNeeded);
+  // Add padding if needed
+  while (base64.length % 4) {
+    base64 += '=';
   }
   
-  try {
-    const buffer = Buffer.from(base64, 'base64');
-    console.log('base64urlToBuffer success, output length:', buffer.length);
-    return buffer;
-  } catch (err) {
-    throw new Error('Failed to decode base64url string: ' + err.message);
-  }
+  return Buffer.from(base64, 'base64');
 }
 
-// FIXED bufferToBase64url function - Handles ALL input types including strings
+// Simple buffer to base64url conversion (handles all types)
 function bufferToBase64url(input) {
-  console.log('bufferToBase64url input:', {
-    type: input?.constructor?.name,
-    isString: typeof input === 'string',
-    isBuffer: Buffer.isBuffer(input),
-    isUint8Array: input instanceof Uint8Array,
-    isArrayBuffer: input instanceof ArrayBuffer,
-    length: input?.length || input?.byteLength
-  });
+  // If it's already a string, return it as-is
+  if (typeof input === 'string') {
+    return input;
+  }
   
-  try {
-    // If it's already a string, assume it's base64url and return as-is
-    if (typeof input === 'string') {
-      console.log('Input is string, returning as-is');
-      return input;
-    }
-    
-    let buffer;
-    
-    if (Buffer.isBuffer(input)) {
-      buffer = input;
-    } else if (input instanceof Uint8Array) {
-      buffer = Buffer.from(input);
-    } else if (input instanceof ArrayBuffer) {
-      buffer = Buffer.from(input);
-    } else if (Array.isArray(input)) {
-      buffer = Buffer.from(input);
-    } else {
-      throw new Error(`Unsupported input type: ${typeof input}, constructor: ${input?.constructor?.name}`);
-    }
-    
-    const result = buffer.toString('base64')
+  // If it's a Buffer, convert it
+  if (Buffer.isBuffer(input)) {
+    return input.toString('base64')
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=/g, '');
-    
-    console.log('bufferToBase64url success, output length:', result.length);
-    return result;
-    
-  } catch (error) {
-    console.error('bufferToBase64url error:', error);
-    throw new Error(`Failed to convert to base64url: ${error.message}`);
   }
+  
+  // If it's a Uint8Array, convert to Buffer first
+  if (input instanceof Uint8Array) {
+    return Buffer.from(input).toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  }
+  
+  // If it's an ArrayBuffer, convert to Buffer first
+  if (input instanceof ArrayBuffer) {
+    return Buffer.from(input).toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  }
+  
+  throw new Error('Expected Buffer, Uint8Array, ArrayBuffer, or string');
 }
 
-// Enhanced validation function - FIXED
+// Simple validation function
 function isValidBase64url(str) {
   if (typeof str !== 'string' || str.length === 0) {
     return false;
   }
   
-  // More permissive validation for WebAuthn credentials
+  // Check for valid base64url characters
   const base64urlRegex = /^[A-Za-z0-9_-]*$/;
-  if (!base64urlRegex.test(str)) {
-    return false;
-  }
-  
-  return true;
+  return base64urlRegex.test(str);
 }
 
-// Additional helper for Uint8Array to base64url (for consistency)
+// Helper: Uint8Array to base64url
 function uint8ArrayToBase64url(uint8Array) {
-  if (!uint8Array) {
-    throw new Error('Input is undefined');
-  }
-  
-  if (uint8Array instanceof Uint8Array) {
-    return bufferToBase64url(uint8Array);
-  }
-  
-  if (Array.isArray(uint8Array)) {
-    return bufferToBase64url(new Uint8Array(uint8Array));
-  }
-  
-  throw new Error('Expected Uint8Array or Array, got: ' + typeof uint8Array);
+  return bufferToBase64url(uint8Array);
 }
 
-// Helper to convert base64url to Uint8Array (for frontend compatibility)
+// Helper: base64url to Uint8Array
 function base64urlToUint8Array(base64urlString) {
   const buffer = base64urlToBuffer(base64urlString);
   return new Uint8Array(buffer);
+}
+
+// Helper: ArrayBuffer to base64url
+function arrayBufferToBase64url(arrayBuffer) {
+  return bufferToBase64url(arrayBuffer);
+}
+
+// Helper: base64url to ArrayBuffer
+function base64urlToArrayBuffer(base64urlString) {
+  const buffer = base64urlToBuffer(base64urlString);
+  return buffer.buffer;
 }
 const app = express();
 
@@ -1925,41 +1890,10 @@ app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (
 
     // Convert challenge to base64url for client
     // Enhanced challenge conversion with better error handling
-let challengeBase64url;
-try {
-    console.log('Options challenge type:', options.challenge?.constructor?.name);
-    console.log('Options challenge length:', options.challenge?.length);
-    
-    // The challenge might already be in the right format
-    if (typeof options.challenge === 'string') {
-        challengeBase64url = options.challenge;
-    } else {
-        challengeBase64url = bufferToBase64url(options.challenge);
-    }
-    
-    console.log('Challenge conversion successful, length:', challengeBase64url.length);
-} catch (error) {
-    console.error('Failed to convert challenge:', error);
-    // Fallback: generate a simple challenge
-    const fallbackChallenge = Buffer.from(crypto.randomBytes(32));
-    challengeBase64url = bufferToBase64url(fallbackChallenge);
-    console.log('Using fallback challenge');
-}
-
-// Convert allowCredentials to proper format if they exist
-let allowCredentialsFormatted = [];
-if (options.allowCredentials && options.allowCredentials.length > 0) {
-    allowCredentialsFormatted = options.allowCredentials.map(cred => ({
-        ...cred,
-        id: typeof cred.id === 'string' ? cred.id : bufferToBase64url(cred.id)
-    }));
-}
-
 res.json({
     ...options,
-    challenge: challengeBase64url,
-    rpID: rpID,
-    allowCredentials: allowCredentialsFormatted.length > 0 ? allowCredentialsFormatted : undefined
+    challenge: typeof options.challenge === 'string' ? options.challenge : bufferToBase64url(options.challenge),
+    rpID: rpID
 });
 
   } catch (err) {
@@ -5577,6 +5511,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
