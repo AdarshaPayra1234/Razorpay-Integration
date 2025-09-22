@@ -1782,6 +1782,220 @@ app.post('/api/admin/webauthn/check-credentials-by-email', async (req, res) => {
   }
 });
 
+// Global Map for storing challenges by email
+const webauthnChallenges = new Map();
+
+// Check WebAuthn credentials by email
+app.post('/api/admin/webauthn/check-credentials-by-email', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ 
+        error: 'Email is required',
+        code: 'EMAIL_REQUIRED'
+      });
+    }
+
+    const admin = await Admin.findOne({ email });
+    if (!admin) {
+      return res.status(404).json({ 
+        error: 'Admin not found',
+        code: 'ADMIN_NOT_FOUND'
+      });
+    }
+
+    const hasWebAuthn = admin.webauthnCredentials.length > 0;
+
+    res.json({
+      success: true,
+      hasWebAuthn
+    });
+  } catch (err) {
+    console.error('Error checking WebAuthn credentials by email:', err);
+    res.status(500).json({ 
+      error: 'Failed to check credentials',
+      code: 'CHECK_FAILED',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// Generate authentication options by email
+app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ 
+        error: 'Email is required',
+        code: 'EMAIL_REQUIRED'
+      });
+    }
+
+    const admin = await Admin.findOne({ email });
+    if (!admin) {
+      return res.status(404).json({ 
+        error: 'Admin not found',
+        code: 'ADMIN_NOT_FOUND'
+      });
+    }
+
+    // Generate allowCredentials
+    const allowCredentials = admin.webauthnCredentials.map(cred => ({
+      id: base64urlToBuffer(cred.credentialID),
+      type: 'public-key'
+    }));
+
+    // Generate authentication options
+    const options = await generateAuthenticationOptions({
+      rpID,
+      allowCredentials,
+      userVerification: 'required'
+    });
+
+    // Store the challenge in our Map with email as key
+    webauthnChallenges.set(email, {
+      challenge: options.challenge,
+      timestamp: Date.now()
+    });
+
+    // Convert challenge to base64url for client
+    res.json({
+      ...options,
+      challenge: uint8ArrayToBase64url(options.challenge)
+    });
+  } catch (err) {
+    console.error('Error generating authentication options by email:', err);
+    res.status(500).json({ 
+      error: 'Failed to generate authentication options',
+      code: 'AUTH_OPTIONS_FAILED',
+      details: err.message 
+    });
+  }
+});
+
+// Verify authentication by email
+app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) => {
+  try {
+    const { credential, email } = req.body;
+
+    if (!credential || !email) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Credential and email are required',
+        code: 'MISSING_PARAMETERS'
+      });
+    }
+
+    // Get the challenge from our Map
+    const challengeData = webauthnChallenges.get(email);
+    if (!challengeData) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Challenge not found or expired',
+        code: 'CHALLENGE_NOT_FOUND'
+      });
+    }
+
+    // Check if challenge is too old (5 minutes)
+    if (Date.now() - challengeData.timestamp > 5 * 60 * 1000) {
+      webauthnChallenges.delete(email);
+      return res.status(400).json({ 
+        success: false,
+        error: 'Challenge expired',
+        code: 'CHALLENGE_EXPIRED'
+      });
+    }
+
+    const admin = await Admin.findOne({ email });
+    if (!admin) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Admin not found',
+        code: 'ADMIN_NOT_FOUND'
+      });
+    }
+
+    // Find the stored credential
+    const storedCredential = admin.webauthnCredentials.find(
+      cred => cred.credentialID === credential.id
+    );
+
+    if (!storedCredential) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Credential not found',
+        code: 'CREDENTIAL_NOT_FOUND'
+      });
+    }
+
+    // Prepare authenticator
+    const authenticator = {
+      credentialID: base64urlToBuffer(storedCredential.credentialID),
+      credentialPublicKey: base64urlToBuffer(storedCredential.credentialPublicKey),
+      counter: storedCredential.counter
+    };
+
+    // Prepare response
+    const response = {
+      id: credential.id,
+      rawId: base64urlToBuffer(credential.rawId),
+      response: {
+        clientDataJSON: base64urlToBuffer(credential.response.clientDataJSON),
+        authenticatorData: base64urlToBuffer(credential.response.authenticatorData),
+        signature: base64urlToBuffer(credential.response.signature),
+        userHandle: credential.response.userHandle ? base64urlToBuffer(credential.response.userHandle) : undefined
+      },
+      type: credential.type
+    };
+
+    // Verify authentication
+    const verification = await verifyAuthenticationResponse({
+      response,
+      expectedChallenge: base64urlToBuffer(challengeData.challenge),
+      expectedOrigin: origin,
+      expectedRPID: rpID,
+      authenticator
+    });
+
+    if (!verification.verified) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Authentication verification failed',
+        code: 'VERIFICATION_FAILED'
+      });
+    }
+
+    // Update counter
+    storedCredential.counter = verification.authenticationInfo.newCounter;
+    await admin.save();
+
+    // Remove the challenge from the Map
+    webauthnChallenges.delete(email);
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { email: admin.email, role: 'admin' },
+      process.env.JWT_SECRET,
+      { expiresIn: '8h' }
+    );
+
+    res.json({ 
+      success: true,
+      message: 'Authentication successful',
+      token
+    });
+
+  } catch (err) {
+    console.error('Error verifying authentication by email:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to verify authentication',
+      code: 'VERIFICATION_ERROR',
+      details: err.message 
+    });
+  }
+});
+
 
 // ===== COUPON ROUTES ===== //
 
@@ -5168,3 +5382,4 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
