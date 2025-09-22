@@ -1874,11 +1874,16 @@ app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (
       type: 'public-key'
     }));
 
-    // Generate authentication options
+    // Generate authentication options with support for platform authenticators
     const options = await generateAuthenticationOptions({
       rpID,
       allowCredentials,
-      userVerification: 'required'
+      userVerification: 'required', // or 'preferred' if you want to allow both
+      authenticatorSelection: {
+        authenticatorAttachment: 'platform', // This allows in-built authenticators
+        requireResidentKey: false, // Set to true if you require resident keys
+        userVerification: 'required'
+      }
     });
 
     // Store the challenge in our Map with email as key
@@ -5419,6 +5424,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
