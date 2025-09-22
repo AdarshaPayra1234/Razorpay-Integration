@@ -1770,82 +1770,6 @@ app.post('/api/admin/webauthn/check-credentials', authenticateAdmin, async (req,
   }
 });
 
-
-// ===== NEW ENDPOINT: Check WebAuthn credentials by email =====
-app.post('/api/admin/webauthn/check-credentials-by-email', async (req, res) => {
-  try {
-    const { email } = req.body;
-    
-    if (!email) {
-      return res.status(400).json({ 
-        error: 'Email is required',
-        code: 'EMAIL_REQUIRED'
-      });
-    }
-    
-    // Find the admin by email
-    const admin = await Admin.findOne({ email });
-    if (!admin) {
-      return res.status(404).json({ 
-        error: 'Admin not found',
-        code: 'ADMIN_NOT_FOUND'
-      });
-    }
-
-    const hasWebAuthn = admin.webauthnCredentials.length > 0;
-    
-    res.json({
-      success: true,
-      hasWebAuthn
-    });
-  } catch (err) {
-    console.error('Error checking WebAuthn credentials by email:', err);
-    res.status(500).json({ 
-      error: 'Failed to check credentials',
-      code: 'CHECK_FAILED',
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
-  }
-});
-
-// Global Map for storing challenges by email
-const webauthnChallenges = new Map();
-
-// Check WebAuthn credentials by email
-app.post('/api/admin/webauthn/check-credentials-by-email', async (req, res) => {
-  try {
-    const { email } = req.body;
-    if (!email) {
-      return res.status(400).json({ 
-        error: 'Email is required',
-        code: 'EMAIL_REQUIRED'
-      });
-    }
-
-    const admin = await Admin.findOne({ email });
-    if (!admin) {
-      return res.status(404).json({ 
-        error: 'Admin not found',
-        code: 'ADMIN_NOT_FOUND'
-      });
-    }
-
-    const hasWebAuthn = admin.webauthnCredentials.length > 0;
-
-    res.json({
-      success: true,
-      hasWebAuthn
-    });
-  } catch (err) {
-    console.error('Error checking WebAuthn credentials by email:', err);
-    res.status(500).json({ 
-      error: 'Failed to check credentials',
-      code: 'CHECK_FAILED',
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
-  }
-});
-
 // Generate authentication options by email
 // Generate authentication options by email
 app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (req, res) => {
@@ -5446,6 +5370,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
