@@ -1906,6 +1906,7 @@ app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (
 
 // Verify authentication by email
 // Verify authentication by email
+// Verify authentication by email - FIXED VERSION
 app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) => {
   try {
     const { credential, email } = req.body;
@@ -1997,7 +1998,7 @@ app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) 
       });
     }
 
-    // Update counter
+    // Update counter and save admin
     storedCredential.counter = verification.authenticationInfo.newCounter;
     await admin.save();
 
@@ -5445,5 +5446,6 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
