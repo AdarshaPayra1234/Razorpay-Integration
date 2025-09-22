@@ -93,6 +93,7 @@ function uint8ArrayToBase64url(input) {
 // Enhanced base64url to buffer conversion
 // Around line 100-150
 // Replace existing base64urlToBuffer function
+// Proper base64url to buffer conversion
 function base64urlToBuffer(base64urlString) {
   if (!base64urlString || typeof base64urlString !== 'string') {
     throw new Error('Invalid base64url string');
@@ -109,7 +110,7 @@ function base64urlToBuffer(base64urlString) {
   return Buffer.from(base64, 'base64');
 }
 
-// Replace existing bufferToBase64url function  
+// Proper buffer to base64url conversion
 function bufferToBase64url(buffer) {
   if (!Buffer.isBuffer(buffer)) {
     throw new Error('Expected Buffer');
@@ -121,37 +122,62 @@ function bufferToBase64url(buffer) {
     .replace(/=/g, '');
 }
 
-// Add this new validation function
-function isValidBase64url(str) {
-  if (typeof str !== 'string') return false;
-  const base64urlRegex = /^[A-Za-z0-9_-]+$/;
-  return base64urlRegex.test(str) && str.length % 4 !== 1;
-}
+// Uint8Array to base64url conversion
+function uint8ArrayToBase64url(uint8Array) {
+  if (!uint8Array) {
+    throw new Error('Input is undefined');
+  }
   
-  // Handle string input (base64url)
- 
-
-// Enhanced buffer to base64url conversion
-// Enhanced buffer to base64url conversion
-function bufferToBase64url(buffer) {
-  if (Buffer.isBuffer(buffer)) {
-    return buffer.toString('base64')
+  // Handle Buffer objects
+  if (Buffer.isBuffer(uint8Array)) {
+    return uint8Array.toString('base64')
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=/g, '');
   }
   
-  if (buffer instanceof Uint8Array) {
-    return Buffer.from(buffer)
+  // Handle Uint8Array
+  if (uint8Array instanceof Uint8Array) {
+    return Buffer.from(uint8Array)
       .toString('base64')
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=/g, '');
   }
   
-  throw new Error('Expected Buffer or Uint8Array, got: ' + typeof buffer);
+  // Handle other array-like objects
+  if (Array.isArray(uint8Array) || uint8Array.length !== undefined) {
+    const convertedArray = new Uint8Array(uint8Array);
+    return Buffer.from(convertedArray)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  }
+  
+  // Handle string input (assume it's already base64url)
+  if (typeof uint8Array === 'string') {
+    if (!isValidBase64url(uint8Array)) {
+      throw new Error('String input is not valid base64url');
+    }
+    return uint8Array;
+  }
+  
+  throw new Error('Expected Uint8Array, Buffer, Array, or string, got ' + typeof uint8Array);
 }
 
+// Base64url validation function
+function isValidBase64url(str) {
+  if (typeof str !== 'string') return false;
+  
+  // Check for valid base64url characters
+  const base64urlRegex = /^[A-Za-z0-9_-]+$/;
+  if (!base64urlRegex.test(str)) return false;
+  
+  // For WebAuthn, credential IDs are usually 32 bytes (43 chars in base64url)
+  // but they can be longer depending on authenticator
+  return str.length % 4 !== 1; // base64url strings can't be length ≡ 1 mod 4
+}
 const app = express();
 
 // FIX: Enable trust proxy for proper rate limiting behind reverse proxy
@@ -1821,6 +1847,7 @@ app.post('/api/admin/webauthn/check-credentials-by-email', async (req, res) => {
 });
 
 // Generate authentication options by email
+// Generate authentication options by email
 app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (req, res) => {
   try {
     const { email } = req.body;
@@ -1839,7 +1866,7 @@ app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (
       });
     }
 
-    // Generate allowCredentials
+    // Generate allowCredentials with proper base64url encoding
     const allowCredentials = admin.webauthnCredentials.map(cred => ({
       id: base64urlToBuffer(cred.credentialID),
       type: 'public-key'
@@ -1861,7 +1888,11 @@ app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (
     // Convert challenge to base64url for client
     res.json({
       ...options,
-      challenge: uint8ArrayToBase64url(options.challenge)
+      challenge: uint8ArrayToBase64url(options.challenge),
+      allowCredentials: allowCredentials.map(cred => ({
+        ...cred,
+        id: uint8ArrayToBase64url(cred.id)
+      }))
     });
   } catch (err) {
     console.error('Error generating authentication options by email:', err);
@@ -1873,6 +1904,7 @@ app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (
   }
 });
 
+// Verify authentication by email
 // Verify authentication by email
 app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) => {
   try {
@@ -1928,14 +1960,14 @@ app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) 
       });
     }
 
-    // Prepare authenticator
+    // Prepare authenticator with proper base64url conversion
     const authenticator = {
       credentialID: base64urlToBuffer(storedCredential.credentialID),
       credentialPublicKey: base64urlToBuffer(storedCredential.credentialPublicKey),
       counter: storedCredential.counter
     };
 
-    // Prepare response
+    // Prepare response with proper base64url conversion
     const response = {
       id: credential.id,
       rawId: base64urlToBuffer(credential.rawId),
@@ -1964,6 +1996,37 @@ app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) 
         code: 'VERIFICATION_FAILED'
       });
     }
+
+    // Update counter
+    storedCredential.counter = verification.authenticationInfo.newCounter;
+    await admin.save();
+
+    // Remove the challenge from the Map
+    webauthnChallenges.delete(email);
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { email: admin.email, role: 'admin' },
+      process.env.JWT_SECRET,
+      { expiresIn: '8h' }
+    );
+
+    res.json({ 
+      success: true,
+      message: 'Authentication successful',
+      token
+    });
+
+  } catch (err) {
+    console.error('Error verifying authentication by email:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to verify authentication',
+      code: 'VERIFICATION_ERROR',
+      details: err.message 
+    });
+  }
+});
 
     // Update counter
     storedCredential.counter = verification.authenticationInfo.newCounter;
@@ -5382,4 +5445,5 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
