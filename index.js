@@ -1332,13 +1332,54 @@ app.post('/api/admin/webauthn/generate-authentication-options', async (req, res)
 
 // Verify registration
 // Verify registration
+// Replace the entire /api/admin/webauthn/verify-registration endpoint
 app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnRateLimit, async (req, res) => {
   try {
     const { credential, deviceName } = req.body;
 
-    console.log('=== WEB AUTHN VERIFICATION STARTED ===');
+    console.log('=== WEB AUTHN REGISTRATION VERIFICATION STARTED ===');
+    console.log('Device name:', deviceName);
+    console.log('Credential ID received:', credential.id);
+    console.log('Credential rawId received:', credential.rawId);
 
-    // Session validation
+    // Validate required fields
+    if (!credential || !deviceName) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Credential and device name are required',
+        code: 'MISSING_PARAMETERS'
+      });
+    }
+
+    // Validate credential ID format
+    if (!credential.id || typeof credential.id !== 'string') {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid credential ID format',
+        code: 'INVALID_CREDENTIAL_ID_FORMAT'
+      });
+    }
+
+    // Validate credential rawId format
+    if (!credential.rawId || typeof credential.rawId !== 'string') {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid rawId format',
+        code: 'INVALID_RAW_ID_FORMAT'
+      });
+    }
+
+    // Check if credential ID is valid base64url
+    if (!isValidBase64url(credential.id)) {
+      console.error('Credential ID is not valid base64url:', credential.id);
+      return res.status(400).json({ 
+        success: false,
+        error: 'Credential ID is not valid base64url',
+        code: 'INVALID_CREDENTIAL_ID_ENCODING'
+      });
+    }
+
+    // Get session data
     const expectedChallenge = req.session.webauthnChallenge;
     const adminEmail = req.session.webauthnEmail;
 
@@ -1360,30 +1401,52 @@ app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnR
       });
     }
 
+    console.log('Admin found:', admin.email);
+
+    // Convert base64url strings to buffers
+    let rawIdBuffer, clientDataBuffer, attestationObjectBuffer;
+
+    try {
+      rawIdBuffer = base64urlToBuffer(credential.rawId);
+      clientDataBuffer = base64urlToBuffer(credential.response.clientDataJSON);
+      attestationObjectBuffer = base64urlToBuffer(credential.response.attestationObject);
+    } catch (err) {
+      console.error('Error converting credential data to buffer:', err);
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid credential data format',
+        code: 'INVALID_CREDENTIAL_DATA',
+        details: err.message
+      });
+    }
+
+    // Prepare response object for verification
+    const response = {
+      id: credential.id,
+      rawId: rawIdBuffer,
+      response: {
+        clientDataJSON: clientDataBuffer,
+        attestationObject: attestationObjectBuffer
+      },
+      type: credential.type
+    };
+
     // Verify registration
     const verification = await verifyRegistrationResponse({
-      response: {
-        id: credential.id,
-        rawId: credential.rawId,
-        response: {
-          attestationObject: credential.response.attestationObject,
-          clientDataJSON: credential.response.clientDataJSON
-        },
-        type: credential.type,
-        clientExtensionResults: credential.clientExtensionResults || {},
-        authenticatorAttachment: credential.authenticatorAttachment
-      },
-      expectedChallenge: expectedChallenge,
+      response,
+      expectedChallenge: base64urlToBuffer(expectedChallenge),
       expectedOrigin: origin,
       expectedRPID: rpID,
       requireUserVerification: true
     });
 
     if (!verification.verified || !verification.registrationInfo) {
+      console.error('Registration verification failed:', verification.verificationError);
       return res.status(400).json({ 
         success: false,
         error: 'Registration verification failed',
-        code: 'VERIFICATION_FAILED'
+        code: 'VERIFICATION_FAILED',
+        details: verification.verificationError?.message
       });
     }
 
@@ -1902,15 +1965,52 @@ app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (
 });
 
 // Verify authentication by email - COMPLETE FIXED VERSION
+// Replace the entire endpoint
 app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) => {
   try {
     const { credential, email } = req.body;
 
+    console.log('=== WEB AUTHN AUTHENTICATION VERIFICATION STARTED ===');
+    console.log('Email:', email);
+    console.log('Credential ID received:', credential.id);
+    console.log('Credential rawId received:', credential.rawId);
+    console.log('Type of credential.id:', typeof credential.id);
+    console.log('Type of credential.rawId:', typeof credential.rawId);
+
+    // Validate required fields
     if (!credential || !email) {
       return res.status(400).json({ 
         success: false,
         error: 'Credential and email are required',
         code: 'MISSING_PARAMETERS'
+      });
+    }
+
+    // Validate credential ID format
+    if (!credential.id || typeof credential.id !== 'string') {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid credential ID format',
+        code: 'INVALID_CREDENTIAL_ID_FORMAT'
+      });
+    }
+
+    // Validate credential rawId format
+    if (!credential.rawId || typeof credential.rawId !== 'string') {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid rawId format',
+        code: 'INVALID_RAW_ID_FORMAT'
+      });
+    }
+
+    // Check if credential ID is valid base64url
+    if (!isValidBase64url(credential.id)) {
+      console.error('Credential ID is not valid base64url:', credential.id);
+      return res.status(400).json({ 
+        success: false,
+        error: 'Credential ID is not valid base64url',
+        code: 'INVALID_CREDENTIAL_ID_ENCODING'
       });
     }
 
@@ -1934,6 +2034,7 @@ app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) 
       });
     }
 
+    // Find admin
     const admin = await Admin.findOne({ email });
     if (!admin) {
       return res.status(404).json({ 
@@ -1943,60 +2044,76 @@ app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) 
       });
     }
 
-    // For platform authenticators, we don't need to verify against stored credentials
-    // Instead, we just verify the authentication response
+    console.log('Admin found:', admin.email);
 
-    // Prepare response with proper base64url conversion
+    // Convert base64url strings to buffers
+    let rawIdBuffer, clientDataBuffer, authenticatorDataBuffer, signatureBuffer, userHandleBuffer;
+
+    try {
+      rawIdBuffer = base64urlToBuffer(credential.rawId);
+      console.log('RawId converted to buffer successfully, length:', rawIdBuffer.length);
+    } catch (err) {
+      console.error('Error converting rawId to buffer:', err);
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid rawId format',
+        code: 'INVALID_RAW_ID',
+        details: err.message
+      });
+    }
+
+    try {
+      clientDataBuffer = base64urlToBuffer(credential.response.clientDataJSON);
+      authenticatorDataBuffer = base64urlToBuffer(credential.response.authenticatorData);
+      signatureBuffer = base64urlToBuffer(credential.response.signature);
+      
+      if (credential.response.userHandle) {
+        userHandleBuffer = base64urlToBuffer(credential.response.userHandle);
+      }
+    } catch (err) {
+      console.error('Error converting response data to buffer:', err);
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid response data format',
+        code: 'INVALID_RESPONSE_DATA',
+        details: err.message
+      });
+    }
+
+    // Prepare response object for verification
     const response = {
       id: credential.id,
-      rawId: base64urlToBuffer(credential.rawId),
+      rawId: rawIdBuffer,
       response: {
-        clientDataJSON: base64urlToBuffer(credential.response.clientDataJSON),
-        authenticatorData: base64urlToBuffer(credential.response.authenticatorData),
-        signature: base64urlToBuffer(credential.response.signature),
-        userHandle: credential.response.userHandle ? base64urlToBuffer(credential.response.userHandle) : undefined
+        clientDataJSON: clientDataBuffer,
+        authenticatorData: authenticatorDataBuffer,
+        signature: signatureBuffer,
+        userHandle: userHandleBuffer
       },
       type: credential.type
     };
 
-    // Verify authentication without stored credentials
+    console.log('Prepared response for verification');
+
+    // Verify authentication
     const verification = await verifyAuthenticationResponse({
       response,
       expectedChallenge: base64urlToBuffer(challengeData.challenge),
       expectedOrigin: origin,
-      expectedRPID: rpID,
-      // No authenticator parameter needed for platform authenticators
+      expectedRPID: rpID
     });
 
     if (!verification.verified) {
+      console.error('Authentication verification failed:', verification.verificationError);
       return res.status(400).json({ 
         success: false,
         error: 'Authentication verification failed',
-        code: 'VERIFICATION_FAILED'
+        code: 'VERIFICATION_FAILED',
+        details: verification.verificationError?.message
       });
     }
 
-    // If we want to save this new credential for future use (optional)
-    if (verification.registrationInfo) {
-      const newCredential = {
-        credentialID: uint8ArrayToBase64url(verification.registrationInfo.credentialID),
-        credentialPublicKey: uint8ArrayToBase64url(verification.registrationInfo.credentialPublicKey),
-        counter: verification.authenticationInfo.newCounter,
-        deviceName: 'Platform Authenticator', // or get from browser
-        deviceType: 'platform',
-        addedAt: new Date()
-      };
-
-      // Check if this credential already exists
-      const existingCredential = admin.webauthnCredentials.find(
-        cred => cred.credentialID === newCredential.credentialID
-      );
-
-      if (!existingCredential) {
-        admin.webauthnCredentials.push(newCredential);
-        await admin.save();
-      }
-    }
+    console.log('Authentication verified successfully');
 
     // Remove the challenge from the Map
     webauthnChallenges.delete(email);
@@ -2024,6 +2141,46 @@ app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) 
     });
   }
 });
+
+// Helper functions for base64url conversion
+function base64urlToBuffer(base64urlString) {
+  if (!base64urlString || typeof base64urlString !== 'string') {
+    throw new Error('Invalid base64url string');
+  }
+  
+  // Convert base64url to base64
+  let base64 = base64urlString.replace(/-/g, '+').replace(/_/g, '/');
+  
+  // Add padding if needed
+  while (base64.length % 4) {
+    base64 += '=';
+  }
+  
+  return Buffer.from(base64, 'base64');
+}
+
+function bufferToBase64url(buffer) {
+  if (!Buffer.isBuffer(buffer)) {
+    throw new Error('Expected Buffer');
+  }
+  
+  return buffer.toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+}
+
+function isValidBase64url(str) {
+  if (typeof str !== 'string') return false;
+  
+  // Check for valid base64url characters
+  const base64urlRegex = /^[A-Za-z0-9_-]+$/;
+  if (!base64urlRegex.test(str)) return false;
+  
+  // For WebAuthn, credential IDs are usually 32 bytes (43 chars in base64url)
+  // but they can be longer depending on authenticator
+  return str.length % 4 !== 1; // base64url strings can't be length ≡ 1 mod 4
+}
 
 
 // ===== COUPON ROUTES ===== //
@@ -5411,6 +5568,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
