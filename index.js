@@ -169,7 +169,6 @@ mongoose.connect(process.env.MONGODB_URI)
 
 // Enhanced CORS Configuration
 // Update your CORS configuration
-// Enhanced CORS Configuration
 const corsOptions = {
   origin: ['https://jokercreation.store', 'http://localhost:3000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -240,7 +239,6 @@ app.use(session({
   proxy: true
 }));
 
-
 // Add session debugging middleware
 app.use((req, res, next) => {
   console.log('Session debug:', {
@@ -248,8 +246,7 @@ app.use((req, res, next) => {
     hasChallenge: !!req.session.webauthnChallenge,
     challenge: req.session.webauthnChallenge ? 
       req.session.webauthnChallenge.substring(0, 20) + '...' : null,
-    hasEmail: !!req.session.webauthnEmail,
-    timestamp: req.session.webauthnTimestamp
+    hasEmail: !!req.session.webauthnEmail
   });
   next();
 });
@@ -862,13 +859,11 @@ app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) =
     
     // Generate JWT token
     // In users backend login route
-// Generate JWT token
 const token = jwt.sign(
-  { email: admin.email, role: 'admin' },
+  { email: user.email, role: 'admin' },
   process.env.JWT_SECRET,  // Same secret as bookings backend
   { expiresIn: '8h' }
 );
-
     
     res.json({ 
       success: true, 
@@ -935,7 +930,7 @@ app.post('/api/admin/check-phone', checkIPBlacklist, async (req, res) => {
 // Route to verify OTP for admin login
 app.post('/api/admin/verify-otp', checkIPBlacklist, async (req, res) => {
     try {
-        const { idToken,  } = req.body;
+        const { idToken, email } = req.body;
         
         if (!idToken) {
             return res.status(400).json({ error: 'ID token is required' });
@@ -954,11 +949,11 @@ app.post('/api/admin/verify-otp', checkIPBlacklist, async (req, res) => {
             return res.status(401).json({ error: 'Unauthorized phone number' });
         }
         
-        // Verify admin credentials (/password) first
+        // Verify admin credentials (email/password) first
         try {
             // This simulates checking against your admin database
             // Replace with your actual admin verification logic
-            const adminUser = await Admin.findOne({  });
+            const adminUser = await Admin.findOne({ email });
             if (!adminUser) {
                 return res.status(401).json({ error: 'Invalid admin credentials' });
             }
@@ -966,7 +961,7 @@ app.post('/api/admin/verify-otp', checkIPBlacklist, async (req, res) => {
             // Generate JWT token for admin access
             const token = jwt.sign(
                 { 
-                    : adminUser., 
+                    email: adminUser.email, 
                     role: 'admin',
                     uid: decodedToken.uid 
                 },
@@ -1028,14 +1023,14 @@ app.post('/api/admin/refresh-token', async (req, res) => {
     }
 
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    const admin = await Admin.findOne({ : decoded. });
+    const admin = await Admin.findOne({ email: decoded.email });
     
     if (!admin) {
       return res.status(401).json({ error: 'Invalid refresh token' });
     }
 
     const newToken = jwt.sign(
-      { : admin., role: 'admin' },
+      { email: admin.email, role: 'admin' },
       process.env.JWT_SECRET,
       { expiresIn: '1h' }
     );
@@ -1185,15 +1180,15 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
     }
 
     const admin = req.admin;
-    console.log('Admin found:', admin.);
+    console.log('Admin found:', admin.email);
 
     // Generate registration options
     const options = await generateRegistrationOptions({
       rpName: 'Joker Creation Admin Panel',
       rpID: rpID,
       userID: Buffer.from(admin._id.toString()),
-      userName: admin.,
-      userDisplayName: admin.,
+      userName: admin.email,
+      userDisplayName: admin.email,
       attestationType: 'direct',
       authenticatorSelection: {
         residentKey: 'preferred',
@@ -1206,7 +1201,7 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
 
     // Store challenge in session
     req.session.webauthnChallenge = options.challenge;
-    req.session.webauthn = admin.;
+    req.session.webauthnEmail = admin.email;
     req.session.webauthnTimestamp = Date.now();
 
     await new Promise((resolve, reject) => {
@@ -1258,8 +1253,8 @@ app.get('/api/debug/session-info', authenticateAdmin, async (req, res) => {
       sessionKeys: Object.keys(req.session),
       hasChallenge: !!req.session.webauthnChallenge,
       challenge: req.session.webauthnChallenge,
-      has: !!req.session.webauthn,
-      : req.session.webauthn,
+      hasEmail: !!req.session.webauthnEmail,
+      email: req.session.webauthnEmail,
       cookie: req.headers.cookie
     };
     
@@ -1271,11 +1266,10 @@ app.get('/api/debug/session-info', authenticateAdmin, async (req, res) => {
 
 
 // Generate authentication options
-// Generate authentication options - UPDATED VERSION (-based)
-// Generate authentication options - UPDATED VERSION (-based)
+// Generate authentication options - UPDATED VERSION (email-based)
 app.post('/api/admin/webauthn/generate-authentication-options', async (req, res) => {
   try {
-    const {  } = req.body;
+    const { email } = req.body;
     
     if (!email) {
       return res.status(400).json({ 
@@ -1294,7 +1288,7 @@ app.post('/api/admin/webauthn/generate-authentication-options', async (req, res)
 
     // Properly format allowCredentials
     const allowCredentials = admin.webauthnCredentials.map(cred => ({
-      id: base64urlToBuffer(cred.credentialID),
+      id: Buffer.from(cred.credentialID, 'base64'),
       type: 'public-key'
     }));
 
@@ -1306,9 +1300,8 @@ app.post('/api/admin/webauthn/generate-authentication-options', async (req, res)
     });
 
     // Store the challenge and email in the session
-    req.session.webauthnChallenge = bufferToBase64url(options.challenge);
+    req.session.webauthnChallenge = uint8ArrayToBase64url(options.challenge);
     req.session.webauthnEmail = email;
-    req.session.webauthnTimestamp = Date.now(); // Add timestamp for expiration check
 
     // Ensure session is saved
     await new Promise((resolve, reject) => {
@@ -1326,7 +1319,7 @@ app.post('/api/admin/webauthn/generate-authentication-options', async (req, res)
     // Convert challenge to base64url for client
     res.json({
       ...options,
-      challenge: bufferToBase64url(options.challenge)
+      challenge: uint8ArrayToBase64url(options.challenge)
     });
   } catch (err) {
     console.error('Error generating authentication options:', err);
@@ -1439,93 +1432,28 @@ app.get('/api/debug/session', authenticateAdmin, (req, res) => {
   });
 });
 
-// Generate authentication options for specific credential
-app.post('/api/admin/webauthn/generate-auth-options', async (req, res) => {
-  try {
-    const { email, credentialId } = req.body;
-    
-    if (!email) {
-      return res.status(400).json({ 
-        error: 'Email is required',
-        code: 'EMAIL_REQUIRED'
-      });
-    }
 
-    const admin = await Admin.findOne({ email });
-    if (!admin) {
-      return res.status(404).json({ 
-        error: 'Admin not found',
-        code: 'ADMIN_NOT_FOUND'
-      });
-    }
-
-    // If specific credential ID is provided, use only that credential
-    let allowCredentials = [];
-    if (credentialId) {
-      const credential = admin.webauthnCredentials.id(credentialId);
-      if (!credential) {
-        return res.status(404).json({ 
-          error: 'Credential not found',
-          code: 'CREDENTIAL_NOT_FOUND'
-        });
-      }
-      allowCredentials = [{
-        id: base64urlToBuffer(credential.credentialID),
-        type: 'public-key'
-      }];
-    } else {
-      // Use all credentials
-      allowCredentials = admin.webauthnCredentials.map(cred => ({
-        id: base64urlToBuffer(cred.credentialID),
-        type: 'public-key'
-      }));
-    }
-
-    // Generate authentication options
-    const options = await generateAuthenticationOptions({
-      rpID,
-      allowCredentials,
-      userVerification: 'required'
-    });
-
-    // Store the challenge and email in the session
-    req.session.webauthnChallenge = bufferToBase64url(options.challenge);
-    req.session.webauthnEmail = email;
-    req.session.webauthnTimestamp = Date.now();
-
-    await new Promise((resolve, reject) => {
-      req.session.save((err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-
-    res.json({
-      ...options,
-      challenge: bufferToBase64url(options.challenge)
-    });
-  } catch (err) {
-    console.error('Error generating authentication options:', err);
-    res.status(500).json({ 
-      error: 'Failed to generate authentication options',
-      code: 'AUTH_OPTIONS_FAILED',
-      details: err.message 
-    });
-  }
-});
-
-
-// Verify authentication
 // Verify authentication
 app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
   try {
     const { credential, email } = req.body;
     
+    console.log('=== WEB AUTHN AUTHENTICATION VERIFICATION STARTED ===');
+
+    // ===== INPUT VALIDATION =====
+    if (!credential || !credential.id || !credential.response) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid credential data structure',
+        code: 'INVALID_CREDENTIAL_STRUCTURE'
+      });
+    }
+
     // ===== SESSION VALIDATION =====
     const expectedChallenge = req.session.webauthnChallenge;
     const sessionEmail = req.session.webauthnEmail;
-    const challengeTimestamp = req.session.webauthnTimestamp;
 
+    // Use email from session or from request body
     const adminEmail = sessionEmail || email;
     
     if (!expectedChallenge || !adminEmail) {
@@ -1536,7 +1464,8 @@ app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
       });
     }
 
-    // Check if challenge is too old (2 minutes)
+    // Check if challenge is too old
+    const challengeTimestamp = req.session.webauthnTimestamp;
     if (!challengeTimestamp || (Date.now() - challengeTimestamp > 2 * 60 * 1000)) {
       return res.status(400).json({ 
         success: false,
@@ -1568,7 +1497,7 @@ app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
       });
     }
 
-    // ===== DATA CONVERSION =====
+    // ===== DATA CONVERSION ===== //
     const authenticator = {
       credentialID: base64urlToBuffer(storedCredential.credentialID),
       credentialPublicKey: base64urlToBuffer(storedCredential.credentialPublicKey),
@@ -1582,13 +1511,12 @@ app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
         clientDataJSON: base64urlToBuffer(credential.response.clientDataJSON),
         authenticatorData: base64urlToBuffer(credential.response.authenticatorData),
         signature: base64urlToBuffer(credential.response.signature),
-        userHandle: credential.response.userHandle ? 
-          base64urlToBuffer(credential.response.userHandle) : undefined
+        userHandle: credential.response.userHandle ? base64urlToBuffer(credential.response.userHandle) : undefined
       },
       type: credential.type
     };
 
-    // ===== VERIFICATION =====
+    // ===== VERIFICATION ===== //
     const verification = await verifyAuthenticationResponse({
       response,
       expectedChallenge: base64urlToBuffer(expectedChallenge),
@@ -1613,10 +1541,10 @@ app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
     // Clear session
     req.session.webauthnChallenge = null;
     req.session.webauthnEmail = null;
-    req.session.webauthnTimestamp = null;
     await req.session.save();
 
-    // Generate JWT token for bookings backend
+    // Generate JWT token
+     // Generate JWT token
     const token = jwt.sign(
       { email: admin.email, role: 'admin' },
       process.env.JWT_SECRET,
@@ -1639,9 +1567,6 @@ app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
     });
   }
 });
-
-
-
 
 
 
@@ -5243,8 +5168,3 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
-
-
-
-
-
