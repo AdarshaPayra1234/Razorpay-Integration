@@ -217,8 +217,6 @@ app.use(cookieParser());
 // Session middleware configuration for production
 // Enhanced session configuration
 // Enhanced session configuration - Replace existing session config
-// Replace your existing session configuration with this:
-
 app.use(session({
   secret: process.env.SESSION_SECRET || 'your-webauthn-session-secret-key',
   resave: false,
@@ -226,22 +224,19 @@ app.use(session({
   cookie: {
     secure: process.env.NODE_ENV === 'production',
     httpOnly: true,
-    sameSite: 'none',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
     maxAge: 24 * 60 * 60 * 1000,
-    path: '/',
-    domain: '.onrender.com' // This helps with subdomain access
+    path: '/'
   },
   store: MongoStore.create({
     mongoUrl: process.env.MONGODB_URI,
     collectionName: 'webauthn_sessions',
     ttl: 24 * 60 * 60,
-    autoRemove: 'native',
-    touchAfter: 24 * 3600 // Reduce touch frequency
+    autoRemove: 'native'
   }),
   name: 'webauthn.sid',
   rolling: true,
-  proxy: true,
-  saveUninitialized: false
+  proxy: true
 }));
 
 // Add session debugging middleware
@@ -1439,14 +1434,11 @@ app.get('/api/debug/session', authenticateAdmin, (req, res) => {
 
 
 // Verify authentication
-// Add this to your backend code (replace the existing WebAuthn verification endpoint)
-
 app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
   try {
-    const { credential, email, sessionId } = req.body;
+    const { credential, email } = req.body;
     
     console.log('=== WEB AUTHN AUTHENTICATION VERIFICATION STARTED ===');
-    console.log('Request body:', { email, sessionId: sessionId?.substring(0, 20) + '...' });
 
     // ===== INPUT VALIDATION =====
     if (!credential || !credential.id || !credential.response) {
@@ -1458,48 +1450,27 @@ app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
     }
 
     // ===== SESSION VALIDATION =====
-    let expectedChallenge, adminEmail;
-    
-    // First try to get from session
-    if (req.session && req.session.webauthnChallenge) {
-      expectedChallenge = req.session.webauthnChallenge;
-      adminEmail = req.session.webauthnEmail;
-      console.log('Found challenge in session');
-    } 
-    // If not in session, try to get from sessionId in request body
-    else if (sessionId) {
-      try {
-        // Look up session in MongoDB
-        const sessionDoc = await mongoose.connection.collection('sessions').findOne({
-          _id: sessionId
-        });
-        
-        if (sessionDoc && sessionDoc.session) {
-          const sessionData = JSON.parse(sessionDoc.session);
-          expectedChallenge = sessionData.webauthnChallenge;
-          adminEmail = sessionData.webauthnEmail;
-          console.log('Found challenge in MongoDB session');
-        }
-      } catch (err) {
-        console.error('Error looking up session in MongoDB:', err);
-      }
-    }
-    
-    // If still no challenge, try to get from email (fallback for simple implementation)
-    if (!expectedChallenge && email) {
-      // Generate a new challenge for this email (simple approach)
-      const crypto = require('crypto');
-      expectedChallenge = crypto.randomBytes(32).toString('base64url');
-      adminEmail = email;
-      console.log('Generated new challenge for email:', email);
-    }
+    const expectedChallenge = req.session.webauthnChallenge;
+    const sessionEmail = req.session.webauthnEmail;
 
+    // Use email from session or from request body
+    const adminEmail = sessionEmail || email;
+    
     if (!expectedChallenge || !adminEmail) {
       return res.status(400).json({ 
         success: false,
-        error: 'Authentication session expired or not found',
-        code: 'SESSION_EXPIRED',
-        details: 'Please try logging in again'
+        error: 'Authentication session expired',
+        code: 'SESSION_EXPIRED'
+      });
+    }
+
+    // Check if challenge is too old
+    const challengeTimestamp = req.session.webauthnTimestamp;
+    if (!challengeTimestamp || (Date.now() - challengeTimestamp > 2 * 60 * 1000)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Challenge expired',
+        code: 'CHALLENGE_EXPIRED'
       });
     }
 
@@ -1567,19 +1538,18 @@ app.post('/api/admin/webauthn/verify-authentication', async (req, res) => {
     storedCredential.counter = verification.authenticationInfo.newCounter;
     await admin.save();
 
+    // Clear session
+    req.session.webauthnChallenge = null;
+    req.session.webauthnEmail = null;
+    await req.session.save();
+
     // Generate JWT token
+     // Generate JWT token
     const token = jwt.sign(
       { email: admin.email, role: 'admin' },
       process.env.JWT_SECRET,
       { expiresIn: '8h' }
     );
-
-    // Clear session challenge
-    if (req.session) {
-      req.session.webauthnChallenge = null;
-      req.session.webauthnEmail = null;
-      await req.session.save();
-    }
 
     res.json({ 
       success: true,
@@ -5198,4 +5168,3 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
-
