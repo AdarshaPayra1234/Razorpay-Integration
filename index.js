@@ -1868,20 +1868,14 @@ app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (
       });
     }
 
-    // Generate allowCredentials with proper base64url encoding
-    const allowCredentials = admin.webauthnCredentials.map(cred => ({
-      id: base64urlToBuffer(cred.credentialID),
-      type: 'public-key'
-    }));
-
-    // Generate authentication options with support for platform authenticators
+    // Generate authentication options for platform (in-built) authenticators only
     const options = await generateAuthenticationOptions({
       rpID,
-      allowCredentials,
-      userVerification: 'required', // or 'preferred' if you want to allow both
+      // No allowCredentials - this forces the browser to use platform authenticators
+      userVerification: 'required',
       authenticatorSelection: {
-        authenticatorAttachment: 'platform', // This allows in-built authenticators
-        requireResidentKey: false, // Set to true if you require resident keys
+        authenticatorAttachment: 'platform',
+        requireResidentKey: false, // Set to true if you want to require resident keys only
         userVerification: 'required'
       }
     });
@@ -1895,11 +1889,7 @@ app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (
     // Convert challenge to base64url for client
     res.json({
       ...options,
-      challenge: uint8ArrayToBase64url(options.challenge),
-      allowCredentials: allowCredentials.map(cred => ({
-        ...cred,
-        id: uint8ArrayToBase64url(cred.id)
-      }))
+      challenge: uint8ArrayToBase64url(options.challenge)
     });
   } catch (err) {
     console.error('Error generating authentication options by email:', err);
@@ -1953,25 +1943,8 @@ app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) 
       });
     }
 
-    // Find the stored credential
-    const storedCredential = admin.webauthnCredentials.find(
-      cred => cred.credentialID === credential.id
-    );
-
-    if (!storedCredential) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'Credential not found',
-        code: 'CREDENTIAL_NOT_FOUND'
-      });
-    }
-
-    // Prepare authenticator with proper base64url conversion
-    const authenticator = {
-      credentialID: base64urlToBuffer(storedCredential.credentialID),
-      credentialPublicKey: base64urlToBuffer(storedCredential.credentialPublicKey),
-      counter: storedCredential.counter
-    };
+    // For platform authenticators, we don't need to verify against stored credentials
+    // Instead, we just verify the authentication response
 
     // Prepare response with proper base64url conversion
     const response = {
@@ -1986,13 +1959,13 @@ app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) 
       type: credential.type
     };
 
-    // Verify authentication
+    // Verify authentication without stored credentials
     const verification = await verifyAuthenticationResponse({
       response,
       expectedChallenge: base64urlToBuffer(challengeData.challenge),
       expectedOrigin: origin,
       expectedRPID: rpID,
-      authenticator
+      // No authenticator parameter needed for platform authenticators
     });
 
     if (!verification.verified) {
@@ -2003,13 +1976,27 @@ app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) 
       });
     }
 
-    // Update counter and save admin - NO AWAIT NEEDED HERE
-    storedCredential.counter = verification.authenticationInfo.newCounter;
-    admin.save().then(() => {
-      console.log('Admin saved successfully');
-    }).catch(saveErr => {
-      console.error('Error saving admin:', saveErr);
-    });
+    // If we want to save this new credential for future use (optional)
+    if (verification.registrationInfo) {
+      const newCredential = {
+        credentialID: uint8ArrayToBase64url(verification.registrationInfo.credentialID),
+        credentialPublicKey: uint8ArrayToBase64url(verification.registrationInfo.credentialPublicKey),
+        counter: verification.authenticationInfo.newCounter,
+        deviceName: 'Platform Authenticator', // or get from browser
+        deviceType: 'platform',
+        addedAt: new Date()
+      };
+
+      // Check if this credential already exists
+      const existingCredential = admin.webauthnCredentials.find(
+        cred => cred.credentialID === newCredential.credentialID
+      );
+
+      if (!existingCredential) {
+        admin.webauthnCredentials.push(newCredential);
+        await admin.save();
+      }
+    }
 
     // Remove the challenge from the Map
     webauthnChallenges.delete(email);
@@ -5424,6 +5411,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
