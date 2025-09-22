@@ -26,6 +26,7 @@ const admin = require('firebase-admin');
 const session = require('express-session');
 const rateLimit = require('express-rate-limit');
 const cron = require('node-cron');
+const crypto = require('crypto');
 
 // Alternative import method
 const MongoStore = require('connect-mongo');
@@ -48,54 +49,9 @@ console.log('SimpleWebAuthn imported:', {
 
 // ADD THE FUNCTION HERE - after requires, before routes
 // Replace the uint8ArrayToBase64url function with this improved version
-function uint8ArrayToBase64url(input) {
-  // If it's already a string (base64url), return it as is
-  if (typeof input === 'string') {
-    return input;
-  }
-  
-  if (!input) {
-    throw new Error('Input is undefined');
-  }
-  
-  // Handle Buffer objects
-  if (Buffer.isBuffer(input)) {
-    return input.toString('base64')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=/g, '');
-  }
-  
-  // Handle Uint8Array
-  if (input instanceof Uint8Array) {
-    return Buffer.from(input)
-      .toString('base64')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=/g, '');
-  }
-  
-  // Handle other array-like objects
-  if (Array.isArray(input) || input.length !== undefined) {
-    const uint8Array = new Uint8Array(input);
-    return Buffer.from(uint8Array)
-      .toString('base64')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=/g, '');
-  }
-  
-  throw new Error('Expected Uint8Array, Buffer, or string, got ' + typeof input);
-}
-
-// Add this function to convert base64url to buffer
-// Improved base64url to buffer conversion
-// Enhanced base64url to buffer conversion
-// Around line 100-150
-// Replace existing base64urlToBuffer function
 // ===== ENHANCED BASE64URL UTILITIES (FIXED VERSION) =====
 
-// Enhanced base64url to buffer conversion - FIXED (with better validation)
+// Enhanced base64url to buffer conversion - FIXED
 function base64urlToBuffer(base64urlString) {
   console.log('base64urlToBuffer input:', {
     type: typeof base64urlString,
@@ -133,43 +89,50 @@ function base64urlToBuffer(base64urlString) {
   }
 }
 
-// SINGLE bufferToBase64url function (removed duplicates) - ENHANCED
-function bufferToBase64url(buffer) {
+// FIXED bufferToBase64url function - Handles ALL input types including strings
+function bufferToBase64url(input) {
   console.log('bufferToBase64url input:', {
-    type: buffer?.constructor?.name,
-    length: buffer?.length || buffer?.byteLength
+    type: input?.constructor?.name,
+    isString: typeof input === 'string',
+    isBuffer: Buffer.isBuffer(input),
+    isUint8Array: input instanceof Uint8Array,
+    isArrayBuffer: input instanceof ArrayBuffer,
+    length: input?.length || input?.byteLength
   });
   
-  if (Buffer.isBuffer(buffer)) {
+  try {
+    // If it's already a string, assume it's base64url and return as-is
+    if (typeof input === 'string') {
+      console.log('Input is string, returning as-is');
+      return input;
+    }
+    
+    let buffer;
+    
+    if (Buffer.isBuffer(input)) {
+      buffer = input;
+    } else if (input instanceof Uint8Array) {
+      buffer = Buffer.from(input);
+    } else if (input instanceof ArrayBuffer) {
+      buffer = Buffer.from(input);
+    } else if (Array.isArray(input)) {
+      buffer = Buffer.from(input);
+    } else {
+      throw new Error(`Unsupported input type: ${typeof input}, constructor: ${input?.constructor?.name}`);
+    }
+    
     const result = buffer.toString('base64')
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=/g, '');
-    console.log('bufferToBase64url success (Buffer), output length:', result.length);
+    
+    console.log('bufferToBase64url success, output length:', result.length);
     return result;
+    
+  } catch (error) {
+    console.error('bufferToBase64url error:', error);
+    throw new Error(`Failed to convert to base64url: ${error.message}`);
   }
-  
-  if (buffer instanceof Uint8Array) {
-    const result = Buffer.from(buffer)
-      .toString('base64')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=/g, '');
-    console.log('bufferToBase64url success (Uint8Array), output length:', result.length);
-    return result;
-  }
-  
-  if (buffer instanceof ArrayBuffer) {
-    const result = Buffer.from(buffer)
-      .toString('base64')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=/g, '');
-    console.log('bufferToBase64url success (ArrayBuffer), output length:', result.length);
-    return result;
-  }
-  
-  throw new Error('Expected Buffer, Uint8Array, or ArrayBuffer, got: ' + typeof buffer);
 }
 
 // Enhanced validation function - FIXED
@@ -184,8 +147,6 @@ function isValidBase64url(str) {
     return false;
   }
   
-  // WebAuthn credential IDs can have various lengths, so remove strict length checks
-  // Just ensure it's not empty and has valid characters
   return true;
 }
 
@@ -1963,11 +1924,43 @@ app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (
     });
 
     // Convert challenge to base64url for client
-    res.json({
-      ...options,
-      challenge: bufferToBase64url(options.challenge),
-      rpID: rpID
-    });
+    // Enhanced challenge conversion with better error handling
+let challengeBase64url;
+try {
+    console.log('Options challenge type:', options.challenge?.constructor?.name);
+    console.log('Options challenge length:', options.challenge?.length);
+    
+    // The challenge might already be in the right format
+    if (typeof options.challenge === 'string') {
+        challengeBase64url = options.challenge;
+    } else {
+        challengeBase64url = bufferToBase64url(options.challenge);
+    }
+    
+    console.log('Challenge conversion successful, length:', challengeBase64url.length);
+} catch (error) {
+    console.error('Failed to convert challenge:', error);
+    // Fallback: generate a simple challenge
+    const fallbackChallenge = Buffer.from(crypto.randomBytes(32));
+    challengeBase64url = bufferToBase64url(fallbackChallenge);
+    console.log('Using fallback challenge');
+}
+
+// Convert allowCredentials to proper format if they exist
+let allowCredentialsFormatted = [];
+if (options.allowCredentials && options.allowCredentials.length > 0) {
+    allowCredentialsFormatted = options.allowCredentials.map(cred => ({
+        ...cred,
+        id: typeof cred.id === 'string' ? cred.id : bufferToBase64url(cred.id)
+    }));
+}
+
+res.json({
+    ...options,
+    challenge: challengeBase64url,
+    rpID: rpID,
+    allowCredentials: allowCredentialsFormatted.length > 0 ? allowCredentialsFormatted : undefined
+});
 
   } catch (err) {
     console.error('Error generating authentication options by email:', err);
@@ -2160,6 +2153,42 @@ app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) 
       details: err.message 
     });
   }
+});
+
+// Temporary debug endpoint - add this to your routes
+app.post('/api/admin/webauthn/debug-challenge', async (req, res) => {
+    try {
+        const { email } = req.body;
+        
+        const admin = await Admin.findOne({ email });
+        if (!admin) {
+            return res.status(404).json({ error: 'Admin not found' });
+        }
+
+        const allowCredentials = admin.webauthnCredentials.map(cred => ({
+            id: base64urlToBuffer(cred.credentialID),
+            type: 'public-key',
+            transports: ['internal']
+        }));
+
+        const options = await generateAuthenticationOptions({
+            rpID,
+            allowCredentials: allowCredentials.length > 0 ? allowCredentials : undefined,
+            userVerification: 'required',
+            timeout: 60000
+        });
+
+        res.json({
+            challengeType: options.challenge?.constructor?.name,
+            challengeLength: options.challenge?.length,
+            challengeSample: options.challenge?.toString?.('base64')?.substring(0, 20),
+            allowCredentialsCount: options.allowCredentials?.length || 0,
+            rawOptions: options // Be careful with this in production
+        });
+        
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 
@@ -5548,6 +5577,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
