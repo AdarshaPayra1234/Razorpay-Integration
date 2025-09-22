@@ -93,63 +93,123 @@ function uint8ArrayToBase64url(input) {
 // Enhanced base64url to buffer conversion
 // Around line 100-150
 // Replace existing base64urlToBuffer function
+// ===== ENHANCED BASE64URL UTILITIES (FIXED VERSION) =====
+
+// Enhanced base64url to buffer conversion - FIXED (with better validation)
 function base64urlToBuffer(base64urlString) {
+  console.log('base64urlToBuffer input:', {
+    type: typeof base64urlString,
+    length: base64urlString?.length,
+    first20: base64urlString?.substring(0, 20) + '...'
+  });
+  
   if (!base64urlString || typeof base64urlString !== 'string') {
-    throw new Error('Invalid base64url string');
+    throw new Error('Invalid base64url string: ' + typeof base64urlString);
+  }
+  
+  // Remove any whitespace
+  const cleanString = base64urlString.trim();
+  
+  // Validate it's a proper base64url string
+  if (!isValidBase64url(cleanString)) {
+    throw new Error('Invalid base64url format: ' + cleanString.substring(0, 20) + '...');
   }
   
   // Convert base64url to base64
-  let base64 = base64urlString.replace(/-/g, '+').replace(/_/g, '/');
+  let base64 = cleanString.replace(/-/g, '+').replace(/_/g, '/');
   
-  // Add padding if needed
-  while (base64.length % 4) {
-    base64 += '=';
+  // Add padding if needed (more robust padding calculation)
+  const paddingNeeded = (4 - (base64.length % 4)) % 4;
+  if (paddingNeeded > 0) {
+    base64 += '='.repeat(paddingNeeded);
   }
   
-  return Buffer.from(base64, 'base64');
-}
-
-// Replace existing bufferToBase64url function  
-function bufferToBase64url(buffer) {
-  if (!Buffer.isBuffer(buffer)) {
-    throw new Error('Expected Buffer');
+  try {
+    const buffer = Buffer.from(base64, 'base64');
+    console.log('base64urlToBuffer success, output length:', buffer.length);
+    return buffer;
+  } catch (err) {
+    throw new Error('Failed to decode base64url string: ' + err.message);
   }
-  
-  return buffer.toString('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '');
 }
 
-// Add this new validation function
-function isValidBase64url(str) {
-  if (typeof str !== 'string') return false;
-  const base64urlRegex = /^[A-Za-z0-9_-]+$/;
-  return base64urlRegex.test(str) && str.length % 4 !== 1;
-}
-  
-  // Handle string input (base64url)
- 
-
-// Enhanced buffer to base64url conversion
-// Enhanced buffer to base64url conversion
+// SINGLE bufferToBase64url function (removed duplicates) - ENHANCED
 function bufferToBase64url(buffer) {
+  console.log('bufferToBase64url input:', {
+    type: buffer?.constructor?.name,
+    length: buffer?.length || buffer?.byteLength
+  });
+  
   if (Buffer.isBuffer(buffer)) {
-    return buffer.toString('base64')
+    const result = buffer.toString('base64')
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=/g, '');
+    console.log('bufferToBase64url success (Buffer), output length:', result.length);
+    return result;
   }
   
   if (buffer instanceof Uint8Array) {
-    return Buffer.from(buffer)
+    const result = Buffer.from(buffer)
       .toString('base64')
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=/g, '');
+    console.log('bufferToBase64url success (Uint8Array), output length:', result.length);
+    return result;
   }
   
-  throw new Error('Expected Buffer or Uint8Array, got: ' + typeof buffer);
+  if (buffer instanceof ArrayBuffer) {
+    const result = Buffer.from(buffer)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+    console.log('bufferToBase64url success (ArrayBuffer), output length:', result.length);
+    return result;
+  }
+  
+  throw new Error('Expected Buffer, Uint8Array, or ArrayBuffer, got: ' + typeof buffer);
+}
+
+// Enhanced validation function - FIXED
+function isValidBase64url(str) {
+  if (typeof str !== 'string' || str.length === 0) {
+    return false;
+  }
+  
+  // More permissive validation for WebAuthn credentials
+  const base64urlRegex = /^[A-Za-z0-9_-]*$/;
+  if (!base64urlRegex.test(str)) {
+    return false;
+  }
+  
+  // WebAuthn credential IDs can have various lengths, so remove strict length checks
+  // Just ensure it's not empty and has valid characters
+  return true;
+}
+
+// Additional helper for Uint8Array to base64url (for consistency)
+function uint8ArrayToBase64url(uint8Array) {
+  if (!uint8Array) {
+    throw new Error('Input is undefined');
+  }
+  
+  if (uint8Array instanceof Uint8Array) {
+    return bufferToBase64url(uint8Array);
+  }
+  
+  if (Array.isArray(uint8Array)) {
+    return bufferToBase64url(new Uint8Array(uint8Array));
+  }
+  
+  throw new Error('Expected Uint8Array or Array, got: ' + typeof uint8Array);
+}
+
+// Helper to convert base64url to Uint8Array (for frontend compatibility)
+function base64urlToUint8Array(base64urlString) {
+  const buffer = base64urlToBuffer(base64urlString);
+  return new Uint8Array(buffer);
 }
 const app = express();
 
@@ -1850,6 +1910,7 @@ app.post('/api/admin/webauthn/check-credentials-by-email', async (req, res) => {
 });
 
 // Generate authentication options by email
+// Generate authentication options by email - FIXED VERSION
 app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (req, res) => {
   try {
     const { email } = req.body;
@@ -1868,29 +1929,46 @@ app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (
       });
     }
 
-    // Generate authentication options for platform (in-built) authenticators only
+    // Prepare allowCredentials if admin has existing credentials
+    const allowCredentials = admin.webauthnCredentials.map(cred => ({
+      id: base64urlToBuffer(cred.credentialID), // Convert stored base64url to buffer
+      type: 'public-key',
+      transports: ['internal'] // Platform authenticator
+    }));
+
+    // Generate authentication options
     const options = await generateAuthenticationOptions({
       rpID,
-      // No allowCredentials - this forces the browser to use platform authenticators
+      allowCredentials: allowCredentials.length > 0 ? allowCredentials : undefined,
       userVerification: 'required',
-      authenticatorSelection: {
-        authenticatorAttachment: 'platform',
-        requireResidentKey: false, // Set to true if you want to require resident keys only
-        userVerification: 'required'
-      }
+      timeout: 60000
     });
 
-    // Store the challenge in our Map with email as key
-    webauthnChallenges.set(email, {
-      challenge: options.challenge,
-      timestamp: Date.now()
+    // Store the challenge in session with proper base64url encoding
+    req.session.webauthnChallenge = bufferToBase64url(options.challenge);
+    req.session.webauthnEmail = email;
+    req.session.webauthnTimestamp = Date.now();
+
+    // Save session
+    await new Promise((resolve, reject) => {
+      req.session.save((err) => {
+        if (err) {
+          console.error('Failed to save session:', err);
+          reject(err);
+        } else {
+          console.log('Auth session saved with challenge');
+          resolve();
+        }
+      });
     });
 
     // Convert challenge to base64url for client
     res.json({
       ...options,
-      challenge: uint8ArrayToBase64url(options.challenge)
+      challenge: bufferToBase64url(options.challenge),
+      rpID: rpID
     });
+
   } catch (err) {
     console.error('Error generating authentication options by email:', err);
     res.status(500).json({ 
@@ -1902,9 +1980,14 @@ app.post('/api/admin/webauthn/generate-authentication-options-by-email', async (
 });
 
 // Verify authentication by email - COMPLETE FIXED VERSION
+// Verify authentication by email - COMPLETELY FIXED VERSION
 app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) => {
   try {
     const { credential, email } = req.body;
+
+    console.log('=== WEB AUTHN AUTHENTICATION VERIFICATION STARTED ===');
+    console.log('Email:', email);
+    console.log('Credential keys:', Object.keys(credential || {}));
 
     if (!credential || !email) {
       return res.status(400).json({ 
@@ -1914,19 +1997,40 @@ app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) 
       });
     }
 
-    // Get the challenge from our Map
-    const challengeData = webauthnChallenges.get(email);
-    if (!challengeData) {
+    // Validate credential structure
+    if (!credential.id || !credential.rawId || !credential.response) {
       return res.status(400).json({ 
         success: false,
-        error: 'Challenge not found or expired',
-        code: 'CHALLENGE_NOT_FOUND'
+        error: 'Invalid credential structure',
+        code: 'INVALID_CREDENTIAL_STRUCTURE'
+      });
+    }
+
+    // Get the challenge from session
+    const expectedChallenge = req.session.webauthnChallenge;
+    const sessionEmail = req.session.webauthnEmail;
+
+    console.log('Session debug:', {
+      hasChallenge: !!expectedChallenge,
+      challengeLength: expectedChallenge?.length,
+      sessionEmail: sessionEmail,
+      requestEmail: email
+    });
+
+    if (!expectedChallenge) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Authentication session expired - no challenge found',
+        code: 'SESSION_EXPIRED'
       });
     }
 
     // Check if challenge is too old (5 minutes)
-    if (Date.now() - challengeData.timestamp > 5 * 60 * 1000) {
-      webauthnChallenges.delete(email);
+    const challengeTimestamp = req.session.webauthnTimestamp;
+    if (!challengeTimestamp || (Date.now() - challengeTimestamp > 5 * 60 * 1000)) {
+      req.session.webauthnChallenge = null;
+      req.session.webauthnEmail = null;
+      await req.session.save();
       return res.status(400).json({ 
         success: false,
         error: 'Challenge expired',
@@ -1943,63 +2047,90 @@ app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) 
       });
     }
 
-    // For platform authenticators, we don't need to verify against stored credentials
-    // Instead, we just verify the authentication response
+    // Find the credential by ID (credential.id is the base64url string)
+    const storedCredential = admin.webauthnCredentials.find(
+      cred => cred.credentialID === credential.id
+    );
 
-    // Prepare response with proper base64url conversion
+    console.log('Credential search:', {
+      credentialId: credential.id,
+      storedCredentialsCount: admin.webauthnCredentials.length,
+      found: !!storedCredential
+    });
+
+    if (!storedCredential) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Security key not registered for this account',
+        code: 'CREDENTIAL_NOT_FOUND'
+      });
+    }
+
+    // Prepare the authenticator data
+    const authenticator = {
+      credentialID: base64urlToBuffer(storedCredential.credentialID),
+      credentialPublicKey: base64urlToBuffer(storedCredential.credentialPublicKey),
+      counter: storedCredential.counter
+    };
+
+    // Prepare the response with proper buffer conversion
     const response = {
-      id: credential.id,
-      rawId: base64urlToBuffer(credential.rawId),
+      id: credential.id, // This should be the base64url string
+      rawId: base64urlToBuffer(credential.rawId), // Convert base64url to buffer
       response: {
         clientDataJSON: base64urlToBuffer(credential.response.clientDataJSON),
         authenticatorData: base64urlToBuffer(credential.response.authenticatorData),
         signature: base64urlToBuffer(credential.response.signature),
-        userHandle: credential.response.userHandle ? base64urlToBuffer(credential.response.userHandle) : undefined
+        userHandle: credential.response.userHandle ? 
+            base64urlToBuffer(credential.response.userHandle) : undefined
       },
-      type: credential.type
+      type: credential.type,
+      clientExtensionResults: credential.clientExtensionResults || {},
+      authenticatorAttachment: credential.authenticatorAttachment
     };
 
-    // Verify authentication without stored credentials
+    console.log('Verification data prepared:', {
+      challengeLength: expectedChallenge.length,
+      hasAuthenticator: !!authenticator,
+      responseId: response.id
+    });
+
+    // Verify authentication
     const verification = await verifyAuthenticationResponse({
       response,
-      expectedChallenge: base64urlToBuffer(challengeData.challenge),
+      expectedChallenge: base64urlToBuffer(expectedChallenge),
       expectedOrigin: origin,
       expectedRPID: rpID,
-      // No authenticator parameter needed for platform authenticators
+      authenticator,
+      requireUserVerification: true
+    });
+
+    console.log('Verification result:', {
+      verified: verification.verified,
+      authenticationInfo: verification.authenticationInfo ? {
+        newCounter: verification.authenticationInfo.newCounter,
+        credentialID: verification.authenticationInfo.credentialID ? 
+            bufferToBase64url(verification.authenticationInfo.credentialID) : null
+      } : null
     });
 
     if (!verification.verified) {
       return res.status(400).json({ 
         success: false,
         error: 'Authentication verification failed',
-        code: 'VERIFICATION_FAILED'
+        code: 'VERIFICATION_FAILED',
+        details: verification.verificationError?.message
       });
     }
 
-    // If we want to save this new credential for future use (optional)
-    if (verification.registrationInfo) {
-      const newCredential = {
-        credentialID: uint8ArrayToBase64url(verification.registrationInfo.credentialID),
-        credentialPublicKey: uint8ArrayToBase64url(verification.registrationInfo.credentialPublicKey),
-        counter: verification.authenticationInfo.newCounter,
-        deviceName: 'Platform Authenticator', // or get from browser
-        deviceType: 'platform',
-        addedAt: new Date()
-      };
+    // Update counter
+    storedCredential.counter = verification.authenticationInfo.newCounter;
+    await admin.save();
 
-      // Check if this credential already exists
-      const existingCredential = admin.webauthnCredentials.find(
-        cred => cred.credentialID === newCredential.credentialID
-      );
-
-      if (!existingCredential) {
-        admin.webauthnCredentials.push(newCredential);
-        await admin.save();
-      }
-    }
-
-    // Remove the challenge from the Map
-    webauthnChallenges.delete(email);
+    // Clear session
+    req.session.webauthnChallenge = null;
+    req.session.webauthnEmail = null;
+    await req.session.save();
 
     // Generate JWT token
     const token = jwt.sign(
@@ -2016,6 +2147,12 @@ app.post('/api/admin/webauthn/verify-authentication-by-email', async (req, res) 
 
   } catch (err) {
     console.error('Error verifying authentication by email:', err);
+    
+    // Clear session on error
+    req.session.webauthnChallenge = null;
+    req.session.webauthnEmail = null;
+    await req.session.save();
+
     res.status(500).json({ 
       success: false,
       error: 'Failed to verify authentication',
@@ -5411,6 +5548,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
