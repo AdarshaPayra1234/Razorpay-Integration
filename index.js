@@ -48,81 +48,91 @@ console.log('SimpleWebAuthn imported:', {
 
 // ADD THE FUNCTION HERE - after requires, before routes
 // Replace the uint8ArrayToBase64url function with this improved version
-/**
- * Converts various input types to base64url string
- * @param {string|Uint8Array|Buffer|ArrayLike<number>} input - Input to convert
- * @returns {string} base64url encoded string
- */
 function uint8ArrayToBase64url(input) {
-  // Handle undefined/null input
-  if (input === undefined || input === null) {
-    throw new Error('Input is undefined or null');
-  }
-  
-  // If it's already a string, assume it's base64url and return as is
+  // If it's already a string (base64url), return it as is
   if (typeof input === 'string') {
-    // Validate it's actually base64url format
-    if (!isValidBase64url(input)) {
-      throw new Error('Input string is not valid base64url format');
-    }
     return input;
   }
   
-  let buffer;
+  if (!input) {
+    throw new Error('Input is undefined');
+  }
   
   // Handle Buffer objects
   if (Buffer.isBuffer(input)) {
-    buffer = input;
-  }
-  // Handle Uint8Array
-  else if (input instanceof Uint8Array) {
-    buffer = Buffer.from(input);
-  }
-  // Handle other array-like objects
-  else if (Array.isArray(input) || (typeof input.length === 'number' && input.length >= 0)) {
-    buffer = Buffer.from(input);
-  }
-  // Handle ArrayBuffer
-  else if (input instanceof ArrayBuffer) {
-    buffer = Buffer.from(input);
-  }
-  else {
-    throw new Error(`Expected Uint8Array, Buffer, ArrayBuffer, array-like object, or string, got ${typeof input}`);
+    return input.toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
   }
   
-  return bufferToBase64url(buffer);
+  // Handle Uint8Array
+  if (input instanceof Uint8Array) {
+    return Buffer.from(input)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  }
+  
+  // Handle other array-like objects
+  if (Array.isArray(input) || input.length !== undefined) {
+    const uint8Array = new Uint8Array(input);
+    return Buffer.from(uint8Array)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  }
+  
+  throw new Error('Expected Uint8Array, Buffer, or string, got ' + typeof input);
 }
 
-/**
- * Converts base64url string to Buffer
- * @param {string} base64urlString - base64url encoded string
- * @returns {Buffer} Decoded buffer
- */
+// Add this function to convert base64url to buffer
+// Improved base64url to buffer conversion
+// Enhanced base64url to buffer conversion
+// Around line 100-150
+// Replace existing base64urlToBuffer function
 function base64urlToBuffer(base64urlString) {
   if (!base64urlString || typeof base64urlString !== 'string') {
-    throw new Error('Invalid base64url string: must be a non-empty string');
-  }
-  
-  // Validate format first
-  if (!isValidBase64url(base64urlString)) {
-    throw new Error('Invalid base64url string format');
+    throw new Error('Invalid base64url string');
   }
   
   // Convert base64url to base64
   let base64 = base64urlString.replace(/-/g, '+').replace(/_/g, '/');
   
-  // Add padding if needed (base64 requires length to be multiple of 4)
-  const paddingNeeded = (4 - (base64.length % 4)) % 4;
-  base64 += '='.repeat(paddingNeeded);
+  // Add padding if needed
+  while (base64.length % 4) {
+    base64 += '=';
+  }
   
   return Buffer.from(base64, 'base64');
 }
 
-/**
- * Converts Buffer to base64url string
- * @param {Buffer|Uint8Array} buffer - Buffer to encode
- * @returns {string} base64url encoded string
- */
+// Replace existing bufferToBase64url function  
+function bufferToBase64url(buffer) {
+  if (!Buffer.isBuffer(buffer)) {
+    throw new Error('Expected Buffer');
+  }
+  
+  return buffer.toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+}
+
+// Add this new validation function
+function isValidBase64url(str) {
+  if (typeof str !== 'string') return false;
+  const base64urlRegex = /^[A-Za-z0-9_-]+$/;
+  return base64urlRegex.test(str) && str.length % 4 !== 1;
+}
+  
+  // Handle string input (base64url)
+ 
+
+// Enhanced buffer to base64url conversion
+// Enhanced buffer to base64url conversion
 function bufferToBase64url(buffer) {
   if (Buffer.isBuffer(buffer)) {
     return buffer.toString('base64')
@@ -139,76 +149,7 @@ function bufferToBase64url(buffer) {
       .replace(/=/g, '');
   }
   
-  throw new Error('Expected Buffer or Uint8Array');
-}
-
-/**
- * Validates if a string is proper base64url format
- * @param {string} value - String to validate
- * @returns {boolean} True if valid base64url
- */
-function isValidBase64url(value) {
-  if (typeof value !== 'string' || value.length === 0) {
-    return false;
-  }
-  
-  // Base64url regex: alphanumeric, hyphen, underscore
-  // Length should not be 1 mod 4 (invalid padding situation)
-  return /^[A-Za-z0-9_-]+$/.test(value) && (value.length % 4 !== 1);
-}
-
-/**
- * Alternative function that converts base64url to Uint8Array instead of Buffer
- * @param {string} base64urlString - base64url encoded string
- * @returns {Uint8Array} Decoded bytes as Uint8Array
- */
-function base64urlToUint8Array(base64urlString) {
-  const buffer = base64urlToBuffer(base64urlString);
-  return new Uint8Array(buffer);
-}
-
-/**
- * Utility function to convert base64 to base64url
- * @param {string} base64String - Standard base64 string
- * @returns {string} base64url encoded string
- */
-function base64ToBase64url(base64String) {
-  if (typeof base64String !== 'string') {
-    throw new Error('Expected string');
-  }
-  
-  return base64String
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '');
-}
-
-/**
- * Utility function to convert base64url to base64
- * @param {string} base64urlString - base64url encoded string
- * @returns {string} Standard base64 string
- */
-function base64urlToBase64(base64urlString) {
-  if (!isValidBase64url(base64urlString)) {
-    throw new Error('Invalid base64url string');
-  }
-  
-  let base64 = base64urlString.replace(/-/g, '+').replace(/_/g, '/');
-  const paddingNeeded = (4 - (base64.length % 4)) % 4;
-  return base64 + '='.repeat(paddingNeeded);
-}
-
-// Export all functions for use in modules
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = {
-    uint8ArrayToBase64url,
-    base64urlToBuffer,
-    bufferToBase64url,
-    isValidBase64url,
-    base64urlToUint8Array,
-    base64ToBase64url,
-    base64urlToBase64
-  };
+  throw new Error('Expected Buffer or Uint8Array, got: ' + typeof buffer);
 }
 const app = express();
 
@@ -5625,6 +5566,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
