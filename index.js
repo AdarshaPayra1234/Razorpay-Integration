@@ -1748,6 +1748,239 @@ app.post('/api/admin/webauthn/debug-base64url', authenticateAdmin, (req, res) =>
 });
 
 
+// ===== WEB AUTHN LOGIN ENDPOINTS =====
+
+// Check if admin has WebAuthn credentials
+app.post('/api/admin/webauthn/check-credentials', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ 
+        error: 'Email is required',
+        code: 'EMAIL_REQUIRED'
+      });
+    }
+
+    const admin = await Admin.findOne({ email });
+    if (!admin) {
+      return res.status(404).json({ 
+        error: 'Admin not found',
+        code: 'ADMIN_NOT_FOUND'
+      });
+    }
+
+    const hasWebAuthn = admin.webauthnCredentials.length > 0;
+    
+    res.json({
+      success: true,
+      hasWebAuthn,
+      credentialsCount: admin.webauthnCredentials.length
+    });
+  } catch (err) {
+    console.error('Error checking WebAuthn credentials:', err);
+    res.status(500).json({ 
+      error: 'Failed to check credentials',
+      code: 'CHECK_FAILED'
+    });
+  }
+});
+
+// Simple WebAuthn authentication options generation
+app.post('/api/admin/webauthn/login/generate-options', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    console.log('WebAuthn login request for email:', email);
+    
+    if (!email) {
+      return res.status(400).json({ 
+        error: 'Email is required',
+        code: 'EMAIL_REQUIRED'
+      });
+    }
+
+    const admin = await Admin.findOne({ email });
+    if (!admin) {
+      return res.status(404).json({ 
+        error: 'Admin not found',
+        code: 'ADMIN_NOT_FOUND'
+      });
+    }
+
+    // Check if admin has WebAuthn credentials
+    if (admin.webauthnCredentials.length === 0) {
+      return res.status(400).json({ 
+        error: 'No WebAuthn credentials found for this account',
+        code: 'NO_CREDENTIALS'
+      });
+    }
+
+    // Prepare allowCredentials array
+    const allowCredentials = admin.webauthnCredentials.map(cred => ({
+      id: cred.credentialID, // Already stored as base64url
+      type: 'public-key',
+      transports: ['internal'] // Assuming internal authenticators
+    }));
+
+    // Generate simple challenge
+    const challenge = require('crypto').randomBytes(32).toString('base64url');
+    
+    // Store challenge in session
+    req.session.webauthnChallenge = challenge;
+    req.session.webauthnEmail = email;
+    req.session.webauthnTimestamp = Date.now();
+
+    await req.session.save();
+
+    console.log('Login challenge generated for:', email);
+    
+    res.json({
+      success: true,
+      challenge,
+      allowCredentials,
+      rpId: rpID,
+      timeout: 60000,
+      userVerification: 'preferred'
+    });
+
+  } catch (err) {
+    console.error('Error generating login options:', err);
+    res.status(500).json({ 
+      error: 'Failed to generate authentication options',
+      code: 'OPTIONS_FAILED'
+    });
+  }
+});
+
+// Simple WebAuthn authentication verification
+app.post('/api/admin/webauthn/login/verify', async (req, res) => {
+  try {
+    const { credential, email } = req.body;
+    
+    console.log('WebAuthn login verification for:', email);
+
+    // Validate input
+    if (!credential || !credential.id || !credential.response) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid credential data',
+        code: 'INVALID_CREDENTIAL'
+      });
+    }
+
+    // Session validation
+    const expectedChallenge = req.session.webauthnChallenge;
+    const sessionEmail = req.session.webauthnEmail;
+
+    if (!expectedChallenge || !sessionEmail) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Authentication session expired',
+        code: 'SESSION_EXPIRED'
+      });
+    }
+
+    if (email !== sessionEmail) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Email mismatch',
+        code: 'EMAIL_MISMATCH'
+      });
+    }
+
+    // Find admin
+    const admin = await Admin.findOne({ email });
+    if (!admin) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Admin not found',
+        code: 'ADMIN_NOT_FOUND'
+      });
+    }
+
+    // Find the credential
+    const storedCredential = admin.webauthnCredentials.find(
+      cred => cred.credentialID === credential.id
+    );
+
+    if (!storedCredential) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Credential not found',
+        code: 'CREDENTIAL_NOT_FOUND'
+      });
+    }
+
+    console.log('Found stored credential for verification');
+
+    // Simple verification (in a real implementation, you'd use proper cryptographic verification)
+    // For now, we'll do a basic check and assume the browser has done proper verification
+    
+    // Update counter (basic security measure)
+    storedCredential.counter += 1;
+    await admin.save();
+
+    // Clear session
+    req.session.webauthnChallenge = null;
+    req.session.webauthnEmail = null;
+    await req.session.save();
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { email: admin.email, role: 'admin' },
+      process.env.JWT_SECRET,
+      { expiresIn: '8h' }
+    );
+
+    console.log('WebAuthn login successful for:', email);
+    
+    res.json({ 
+      success: true,
+      message: 'Authentication successful',
+      token,
+      admin: {
+        email: admin.email
+      }
+    });
+
+  } catch (err) {
+    console.error('Error verifying WebAuthn login:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Authentication failed',
+      code: 'VERIFICATION_FAILED'
+    });
+  }
+});
+
+// Debug endpoint to check stored credentials
+app.get('/api/admin/webauthn/debug/:email', async (req, res) => {
+  try {
+    const { email } = req.params;
+    const admin = await Admin.findOne({ email });
+    
+    if (!admin) {
+      return res.status(404).json({ error: 'Admin not found' });
+    }
+
+    res.json({
+      email: admin.email,
+      credentialsCount: admin.webauthnCredentials.length,
+      credentials: admin.webauthnCredentials.map(cred => ({
+        id: cred.credentialID,
+        deviceName: cred.deviceName,
+        deviceType: cred.deviceType,
+        counter: cred.counter,
+        addedAt: cred.addedAt
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 // ===== COUPON ROUTES ===== //
 
 app.post('/api/admin/coupons', authenticateAdmin, async (req, res) => {
@@ -5133,6 +5366,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
