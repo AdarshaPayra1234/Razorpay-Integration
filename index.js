@@ -3084,7 +3084,7 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
   try {
     console.log('Image upload request received');
 
-    // ✅ Validate file existence
+    // Validate file existence
     if (!req.file) {
       return res.status(400).json({ 
         success: false,
@@ -3092,7 +3092,7 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
       });
     }
 
-    // ✅ Validate file type
+    // Validate file type
     if (!req.file.mimetype.startsWith('image/')) {
       return res.status(400).json({ 
         success: false,
@@ -3100,7 +3100,7 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
       });
     }
 
-    // ✅ Validate file size (max 32MB for ImgBB free tier)
+    // Validate file size
     if (req.file.size > 32 * 1024 * 1024) {
       return res.status(400).json({ 
         success: false,
@@ -3114,12 +3114,15 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
       mimetype: req.file.mimetype
     });
 
-    // ✅ Convert buffer to base64 for ImgBB
+    // Convert to base64
     const base64Image = req.file.buffer.toString('base64');
-    const formData = new FormData();
-    formData.append('image', base64Image);
+    
+    // Create URLSearchParams for ImgBB
+    const params = new URLSearchParams();
+    params.append('key', process.env.IMGBB_API_KEY);
+    params.append('image', base64Image);
+    params.append('name', req.file.originalname);
 
-    // ✅ Get ImgBB API key
     const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
     if (!IMGBB_API_KEY) {
       console.error('ImgBB API key not configured');
@@ -3129,18 +3132,27 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
       });
     }
 
-    // ✅ Upload to ImgBB
+    // Upload to ImgBB
     const imgbbResponse = await axios.post(
-      `https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`,
-      formData,
-      { headers: formData.getHeaders(), timeout: 30000 }
+      'https://api.imgbb.com/1/upload',
+      params.toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json'
+        },
+        timeout: 30000
+      }
     );
 
+    console.log('ImgBB upload response:', imgbbResponse.data);
+
     if (!imgbbResponse.data.success) {
-      console.error('ImgBB upload failed:', imgbbResponse.data.error);
-      return res.status(500).json({ 
+      console.error('ImgBB upload failed:', imgbbResponse.data);
+      return res.status(400).json({ 
         success: false,
-        error: imgbbResponse.data.error?.message || 'Upload to image service failed' 
+        error: imgbbResponse.data.error?.message || 'Upload to image service failed',
+        imgbbError: imgbbResponse.data.error
       });
     }
 
@@ -3152,7 +3164,7 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
       deleteUrl: imgbbData.delete_url
     });
 
-    // ✅ Save to MongoDB with proper fields for delete later
+    // Save to MongoDB
     const galleryItem = new Gallery({
       name: req.body.name || req.file.originalname,
       description: req.body.description || '',
@@ -3166,7 +3178,6 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
 
     await galleryItem.save();
 
-    // ✅ Return data for frontend
     res.json({
       success: true,
       galleryId: galleryItem._id,
@@ -3184,12 +3195,11 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
     let statusCode = 500;
 
     if (error.response) {
-      errorMessage = error.response.data.error?.message || 'Image service error';
+      errorMessage = `ImgBB API Error: ${error.response.status}`;
       statusCode = error.response.status;
+      console.error('ImgBB API response error:', error.response.data);
     } else if (error.request) {
       errorMessage = 'Network error - could not connect to image service';
-    } else if (error.code === 'ECONNABORTED') {
-      errorMessage = 'Upload timeout - please try again';
     } else {
       errorMessage = error.message;
     }
@@ -3197,7 +3207,8 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
     res.status(statusCode).json({
       success: false,
       error: errorMessage,
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      imgbbError: error.response?.data
     });
   }
 });
@@ -3229,7 +3240,7 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
           continue;
         }
 
-        // Validate file size
+        // Validate file size (ImgBB has limits)
         if (file.size > 32 * 1024 * 1024) {
           errors.push({
             filename: file.originalname,
@@ -3240,10 +3251,17 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
 
         console.log('Uploading to ImgBB:', file.originalname);
 
-        // Create form data for ImgBB API
-        const formData = new FormData();
+        // Convert to base64
         const base64Image = file.buffer.toString('base64');
-        formData.append('image', base64Image);
+        
+        // Create URLSearchParams instead of FormData for ImgBB
+        const params = new URLSearchParams();
+        params.append('key', process.env.IMGBB_API_KEY);
+        params.append('image', base64Image);
+        params.append('name', file.originalname);
+        
+        // Optional: Add expiration if needed
+        // params.append('expiration', '600'); // 10 minutes
 
         const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
         
@@ -3251,31 +3269,33 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
           throw new Error('ImgBB API key not configured');
         }
 
-        // Upload to ImgBB
+        // Upload to ImgBB with correct content type
         const imgbbResponse = await axios.post(
-          `https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`,
-          formData,
+          'https://api.imgbb.com/1/upload',
+          params.toString(), // Send as URL-encoded form data
           {
             headers: {
-              ...formData.getHeaders(),
-              'Content-Type': 'multipart/form-data'
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'Accept': 'application/json'
             },
             timeout: 30000
           }
         );
 
+        console.log('ImgBB Response:', imgbbResponse.data);
+
         if (imgbbResponse.data.success) {
-          const imgbbData = imgbbResponse.data.data;
+          const imgbbData = imgbbData.data;
           
-          // Create gallery entry using the correct ImgBB response structure
+          // Create gallery entry
           const galleryItem = new Gallery({
             name: file.originalname,
             description: '',
             category: 'uploads',
-            imageUrl: imgbbData.url, // Main image URL
-            thumbnailUrl: imgbbData.thumb?.url || imgbbData.url, // Use thumb URL if available
-            deleteUrl: imgbbData.delete_url,
-            imgbbId: imgbbData.id
+            imageUrl: imgbbData.data.url, // Main image URL
+            thumbnailUrl: imgbbData.data.thumb?.url || imgbbData.data.url,
+            deleteUrl: imgbbData.data.delete_url,
+            imgbbId: imgbbData.data.id
           });
 
           await galleryItem.save();
@@ -3284,11 +3304,11 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
             success: true,
             filename: file.originalname,
             galleryId: galleryItem._id,
-            url: imgbbData.url, // Main image URL
-            thumb: imgbbData.thumb?.url || imgbbData.url, // Thumbnail URL
-            medium: imgbbData.medium?.url || imgbbData.url, // Medium size URL
-            deleteUrl: imgbbData.delete_url,
-            imageId: imgbbData.id
+            url: imgbbData.data.url,
+            thumb: imgbbData.data.thumb?.url || imgbbData.data.url,
+            medium: imgbbData.data.medium?.url || imgbbData.data.url,
+            deleteUrl: imgbbData.data.delete_url,
+            imageId: imgbbData.data.id
           });
         } else {
           errors.push({
@@ -3298,19 +3318,26 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
         }
 
         // Add a small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 1000));
         
       } catch (fileError) {
         console.error(`Error uploading ${file.originalname}:`, fileError);
+        
+        // More detailed error information
+        let errorMessage = fileError.message;
+        if (fileError.response) {
+          errorMessage = `ImgBB API Error: ${fileError.response.status} - ${JSON.stringify(fileError.response.data)}`;
+        }
+        
         errors.push({
           filename: file.originalname,
-          error: fileError.message || 'Upload failed'
+          error: errorMessage
         });
       }
     }
 
     res.json({
-      success: true,
+      success: errors.length === 0,
       results,
       errors,
       summary: {
@@ -5353,6 +5380,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
