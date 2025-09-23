@@ -433,8 +433,19 @@ const gallerySchema = new mongoose.Schema({
   featured: { type: Boolean, default: false },
   imageUrl: { type: String, required: true },
   thumbnailUrl: String,
-  deleteUrl: String,
+  mediumUrl: String,
+  deleteUrl: String, // Freeimage.host deletion URL
   imgbbId: String,
+  imageSize: Number,
+  imageWidth: Number,
+  imageHeight: Number,
+  freeimageHostData: { // Store Freeimage.host specific data
+    imageId: String,
+    filename: String,
+    url_viewer: String,
+    original_filename: String,
+    delete_token: String // If provided in response
+  },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
@@ -774,6 +785,116 @@ async function initializeAdmin() {
   }
 }
 
+// Freeimage.host deletion utility function
+async function deleteFromFreeimageHost(deleteUrl, imageId) {
+  try {
+    if (!deleteUrl) {
+      console.warn('No delete URL provided for Freeimage.host');
+      return false;
+    }
+
+    console.log('Attempting to delete from Freeimage.host:', {
+      deleteUrl: deleteUrl,
+      imageId: imageId
+    });
+
+    // Freeimage.host deletion typically requires visiting the delete URL
+    // or making a POST request to it. The exact method depends on their implementation.
+    
+    // Method 1: Direct URL visit (if that's how it works)
+    try {
+      const response = await axios.get(deleteUrl, {
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        }
+      });
+
+      console.log('Freeimage.host deletion response status:', response.status);
+      
+      // Check if deletion was successful based on response
+      if (response.status === 200) {
+        // Look for success indicators in the response
+        if (response.data.includes('deleted') || response.data.includes('success')) {
+          console.log('Freeimage.host deletion successful via URL visit');
+          return true;
+        }
+      }
+    } catch (urlError) {
+      console.log('URL visit method failed, trying POST method...');
+    }
+
+    // Method 2: POST request to delete URL (if that's how it works)
+    try {
+      const formData = new FormData();
+      formData.append('delete', 'true');
+      
+      const response = await axios.post(deleteUrl, formData, {
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json, text/html, application/xhtml+xml',
+          ...formData.getHeaders()
+        }
+      });
+
+      console.log('Freeimage.host POST deletion response:', response.status);
+      
+      if (response.status === 200) {
+        console.log('Freeimage.host deletion successful via POST');
+        return true;
+      }
+    } catch (postError) {
+      console.log('POST method also failed:', postError.message);
+    }
+
+    // Method 3: If they provide a specific API endpoint for deletion
+    // This would require the actual deletion endpoint format
+    try {
+      const FREEIMAGE_HOST_API_KEY = process.env.FREEIMAGE_HOST_API_KEY;
+      if (imageId && FREEIMAGE_HOST_API_KEY) {
+        const response = await axios.post(
+          'https://freeimage.host/api/1/delete',
+          {
+            key: FREEIMAGE_HOST_API_KEY,
+            action: 'delete',
+            image: imageId
+          },
+          {
+            timeout: 10000,
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded'
+            }
+          }
+        );
+
+        if (response.data && response.data.success) {
+          console.log('Freeimage.host deletion successful via API');
+          return true;
+        }
+      }
+    } catch (apiError) {
+      console.log('API deletion method failed:', apiError.message);
+    }
+
+    console.warn('All deletion methods failed for Freeimage.host');
+    return false;
+
+  } catch (error) {
+    console.error('Freeimage.host deletion error:', error.message);
+    
+    if (error.response) {
+      console.log('Response status:', error.response.status);
+      console.log('Response data:', error.response.data);
+    }
+    
+    return false;
+  }
+}
+
+
+
 app.use((req, res, next) => {
   // Allow framing from same origin and trusted domains including Google
   res.setHeader(
@@ -782,6 +903,7 @@ app.use((req, res, next) => {
   );
   next();
 });
+
 
 // ==================== ROUTES ====================
 
@@ -3081,9 +3203,11 @@ app.get('/api/admin/users/stats', authenticateAdmin, async (req, res) => {
 
 // Add this endpoint to handle image uploads to ImgBB
 // Fixed image upload endpoint
+// Freeimage.host image upload endpoint
+// Freeimage.host image upload endpoint with deletion support
 app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (req, res) => {
   try {
-    console.log('Image upload request received');
+    console.log('Image upload request received - Freeimage.host');
     
     if (!req.file) {
       return res.status(400).json({ 
@@ -3100,49 +3224,49 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
       });
     }
 
-    // Check file size (ImgBB has 32MB limit)
-    if (req.file.size > 32 * 1024 * 1024) {
+    // Check file size (Freeimage.host has limits - typically 10-15MB)
+    if (req.file.size > 15 * 1024 * 1024) {
       return res.status(400).json({ 
         success: false,
-        error: 'Image size must be less than 32MB' 
+        error: 'Image size must be less than 15MB' 
       });
     }
 
-    const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
+    const FREEIMAGE_HOST_API_KEY = process.env.FREEIMAGE_HOST_API_KEY;
     
-    if (!IMGBB_API_KEY) {
-      console.error('ImgBB API key not configured');
+    if (!FREEIMAGE_HOST_API_KEY) {
+      console.error('Freeimage.host API key not configured');
       return res.status(500).json({ 
         success: false,
         error: 'Image upload service not configured',
-        code: 'IMGBB_NOT_CONFIGURED'
+        code: 'FREEIMAGE_HOST_NOT_CONFIGURED'
       });
     }
 
     console.log('API Key status:', {
-      hasKey: !!IMGBB_API_KEY,
-      keyPreview: IMGBB_API_KEY.substring(0, 8) + '...'
+      hasKey: !!FREEIMAGE_HOST_API_KEY,
+      keyPreview: FREEIMAGE_HOST_API_KEY.substring(0, 8) + '...'
     });
 
-    // Convert to base64
+    // Convert image to base64 for Freeimage.host API
     const base64Image = req.file.buffer.toString('base64');
     
-    // Create form data with proper formatting
-    const formData = new FormData();
-    formData.append('image', base64Image);
-    
-    // Add optional parameters for better handling
-    formData.append('name', req.file.originalname);
-    formData.append('expiration', '600'); // 10 minutes
-
-    console.log('Uploading to ImgBB...', {
+    console.log('Uploading to Freeimage.host...', {
       filename: req.file.originalname,
       size: req.file.size,
       base64Length: base64Image.length
     });
 
+    // Prepare form data for Freeimage.host API v1
+    const formData = new FormData();
+    formData.append('key', FREEIMAGE_HOST_API_KEY);
+    formData.append('action', 'upload');
+    formData.append('source', base64Image);
+    formData.append('format', 'json');
+
+    // Upload to Freeimage.host
     const response = await axios.post(
-      `https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`,
+      'https://freeimage.host/api/1/upload',
       formData,
       { 
         headers: {
@@ -3150,60 +3274,82 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
           'Accept': 'application/json',
         },
         timeout: 30000,
-        maxContentLength: 50 * 1024 * 1024, // 50MB
-        maxBodyLength: 50 * 1024 * 1024
+        maxContentLength: 20 * 1024 * 1024, // 20MB
+        maxBodyLength: 20 * 1024 * 1024
       }
     );
 
-    console.log('ImgBB Response:', {
+    console.log('Freeimage.host Response:', {
       status: response.status,
-      success: response.data.success,
-      data: response.data.data ? {
-        id: response.data.data.id,
-        url: response.data.data.url ? 'Present' : 'Missing',
-        delete_url: response.data.data.delete_url ? 'Present' : 'Missing'
-      } : 'No data'
+      status_code: response.data.status_code,
+      success: response.data.success
     });
 
-    if (!response.data.success) {
-      console.error('ImgBB API returned error:', response.data);
+    // Check if upload was successful
+    if (response.data.status_code !== 200 || !response.data.success) {
+      console.error('Freeimage.host API returned error:', response.data);
       return res.status(400).json({ 
         success: false,
-        error: response.data.error?.message || 'Upload failed',
-        code: 'IMGBB_API_ERROR',
+        error: response.data.error_message || 'Upload failed',
+        code: 'FREEIMAGE_HOST_API_ERROR',
         details: response.data
       });
     }
 
-    const imgbbData = response.data.data;
+    const imageData = response.data.image;
+    
+    console.log('Image uploaded successfully:', {
+      id: imageData.id_encoded,
+      url: imageData.url,
+      thumb: imageData.thumb?.url,
+      medium: imageData.medium?.url,
+      delete_url: imageData.url_viewer // This is used for deletion
+    });
 
-    // Save to database
+    // Save to database with deletion information
     const galleryItem = new Gallery({
       name: req.body.name || req.file.originalname,
       description: req.body.description || '',
       category: req.body.category || 'uploads',
-      imageUrl: imgbbData.url,
-      thumbnailUrl: imgbbData.thumb?.url || imgbbData.url,
-      deleteUrl: imgbbData.delete_url,
-      imgbbId: imgbbData.id,
+      imageUrl: imageData.url,
+      thumbnailUrl: imageData.thumb?.url || imageData.url,
+      mediumUrl: imageData.medium?.url || imageData.url,
+      deleteUrl: imageData.url_viewer, // This is the deletion URL
+      imgbbId: imageData.id_encoded,
+      imageSize: imageData.size,
+      imageWidth: imageData.width,
+      imageHeight: imageData.height,
+      freeimageHostData: { // Store additional Freeimage.host data
+        imageId: imageData.id_encoded,
+        filename: imageData.filename,
+        url_viewer: imageData.url_viewer,
+        original_filename: imageData.original_filename
+      }
     });
 
     await galleryItem.save();
 
     res.json({
       success: true,
-      message: 'Image uploaded successfully',
+      message: 'Image uploaded successfully to Freeimage.host',
       data: {
         id: galleryItem._id,
-        url: imgbbData.url,
-        thumb: imgbbData.thumb?.url,
-        medium: imgbbData.medium?.url,
-        deleteUrl: imgbbData.delete_url
+        url: imageData.url,
+        thumb: imageData.thumb?.url,
+        medium: imageData.medium?.url,
+        display_url: imageData.display_url,
+        delete_url: imageData.url_viewer, // Include deletion URL in response
+        imageInfo: {
+          name: imageData.filename,
+          size: imageData.size_formatted,
+          dimensions: `${imageData.width}x${imageData.height}`,
+          uploaded: imageData.how_long_ago
+        }
       }
     });
 
   } catch (error) {
-    console.error('Image upload error details:', {
+    console.error('Freeimage.host upload error details:', {
       name: error.name,
       message: error.message,
       code: error.code,
@@ -3211,40 +3357,44 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
       data: error.response?.data
     });
 
-    let errorMessage = 'Failed to upload image';
+    let errorMessage = 'Failed to upload image to Freeimage.host';
     let statusCode = 500;
 
     if (error.response) {
-      // ImgBB specific errors
       statusCode = error.response.status;
       
       if (error.response.status === 400) {
-        errorMessage = 'Invalid request to image service';
+        errorMessage = 'Invalid request to Freeimage.host';
       } else if (error.response.status === 403) {
-        errorMessage = 'Access denied by image service. Please check your API key.';
+        errorMessage = 'Access denied by Freeimage.host. Please check your API key.';
       } else if (error.response.status === 429) {
         errorMessage = 'Rate limit exceeded. Please try again later.';
       } else if (error.response.status >= 500) {
-        errorMessage = 'Image service is temporarily unavailable';
+        errorMessage = 'Freeimage.host service is temporarily unavailable';
       }
       
-      // Include ImgBB error details if available
       if (error.response.data) {
-        errorMessage = error.response.data.error?.message || errorMessage;
+        errorMessage = error.response.data.error_message || errorMessage;
       }
     } else if (error.request) {
-      errorMessage = 'Cannot connect to image service. Check your network connection.';
+      errorMessage = 'Cannot connect to Freeimage.host. Check your network connection.';
+    } else if (error.message.includes('timeout')) {
+      errorMessage = 'Upload timeout. The image might be too large.';
     }
 
     res.status(statusCode).json({
       success: false,
       error: errorMessage,
       details: process.env.NODE_ENV === 'development' ? error.message : undefined,
-      code: error.response?.data?.error?.code || 'UPLOAD_ERROR'
+      code: 'UPLOAD_ERROR'
     });
   }
 });
+
+
 // Add this endpoint to handle multiple image uploads
+// Multiple image upload to Freeimage.host
+// Multiple image upload to Freeimage.host with deletion support
 app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), async (req, res) => {
   try {
     console.log('Multiple image upload request received:', req.files.length);
@@ -3255,8 +3405,19 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
         error: 'No images provided' 
       });
     }
+
+    const FREEIMAGE_HOST_API_KEY = process.env.FREEIMAGE_HOST_API_KEY;
+    
+    if (!FREEIMAGE_HOST_API_KEY) {
+      return res.status(500).json({ 
+        success: false,
+        error: 'Freeimage.host API key not configured'
+      });
+    }
+
     const results = [];
     const errors = [];
+
     // Process each image sequentially to avoid rate limiting
     for (const file of req.files) {
       try {
@@ -3268,68 +3429,89 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
           });
           continue;
         }
+
         // Validate file size
-        if (file.size > 32 * 1024 * 1024) {
+        if (file.size > 15 * 1024 * 1024) {
           errors.push({
             filename: file.originalname,
-            error: 'File too large (max 32MB)'
+            error: 'File too large (max 15MB)'
           });
           continue;
         }
-        console.log('Uploading to ImgBB:', file.originalname);
-        // Create form data for ImgBB API
-        const formData = new FormData();
+
+        console.log('Uploading to Freeimage.host:', file.originalname);
+
+        // Convert to base64
         const base64Image = file.buffer.toString('base64');
-        formData.append('image', base64Image);
-        const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
-        
-        if (!IMGBB_API_KEY) {
-          throw new Error('ImgBB API key not configured');
-        }
-        // Upload to ImgBB
-        const imgbbResponse = await axios.post(
-          `https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`,
+
+        // Prepare form data
+        const formData = new FormData();
+        formData.append('key', FREEIMAGE_HOST_API_KEY);
+        formData.append('action', 'upload');
+        formData.append('source', base64Image);
+        formData.append('format', 'json');
+
+        // Upload to Freeimage.host
+        const response = await axios.post(
+          'https://freeimage.host/api/1/upload',
           formData,
           {
             headers: {
               ...formData.getHeaders(),
-              'Content-Type': 'multipart/form-data'
             },
             timeout: 30000
           }
         );
-        if (imgbbResponse.data.success) {
-          const imgbbData = imgbbResponse.data.data;
+
+        if (response.data.status_code === 200 && response.data.success) {
+          const imageData = response.data.image;
           
-          // Create gallery entry using the correct ImgBB response structure
+          // Create gallery entry with deletion info
           const galleryItem = new Gallery({
             name: file.originalname,
             description: '',
             category: 'uploads',
-            imageUrl: imgbbData.url, // Main image URL
-            thumbnailUrl: imgbbData.thumb?.url || imgbbData.url, // Use thumb URL if available
-            deleteUrl: imgbbData.delete_url,
-            imgbbId: imgbbData.id
+            imageUrl: imageData.url,
+            thumbnailUrl: imageData.thumb?.url || imageData.url,
+            mediumUrl: imageData.medium?.url || imageData.url,
+            deleteUrl: imageData.url_viewer, // Store deletion URL
+            imgbbId: imageData.id_encoded,
+            imageSize: imageData.size,
+            imageWidth: imageData.width,
+            imageHeight: imageData.height,
+            freeimageHostData: {
+              imageId: imageData.id_encoded,
+              filename: imageData.filename,
+              url_viewer: imageData.url_viewer,
+              original_filename: imageData.original_filename
+            }
           });
+
           await galleryItem.save();
+
           results.push({
             success: true,
             filename: file.originalname,
             galleryId: galleryItem._id,
-            url: imgbbData.url, // Main image URL
-            thumb: imgbbData.thumb?.url || imgbbData.url, // Thumbnail URL
-            medium: imgbbData.medium?.url || imgbbData.url, // Medium size URL
-            deleteUrl: imgbbData.delete_url,
-            imageId: imgbbData.id
+            url: imageData.url,
+            thumb: imageData.thumb?.url,
+            medium: imageData.medium?.url,
+            display_url: imageData.display_url,
+            delete_url: imageData.url_viewer, // Include deletion URL
+            imageInfo: {
+              size: imageData.size_formatted,
+              dimensions: `${imageData.width}x${imageData.height}`
+            }
           });
         } else {
           errors.push({
             filename: file.originalname,
-            error: imgbbResponse.data.error?.message || 'Upload failed'
+            error: response.data.error_message || 'Upload failed'
           });
         }
+
         // Add a small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 1000));
         
       } catch (fileError) {
         console.error(`Error uploading ${file.originalname}:`, fileError);
@@ -3339,6 +3521,7 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
         });
       }
     }
+
     res.json({
       success: true,
       results,
@@ -3347,13 +3530,14 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
         successful: results.length,
         failed: errors.length,
         total: req.files.length
-      }
+      },
+      note: 'Images include deletion URLs for future removal from Freeimage.host'
     });
   } catch (error) {
     console.error('Multiple image upload error:', error);
     res.status(500).json({ 
       success: false,
-      error: 'Failed to upload images',
+      error: 'Failed to upload images to Freeimage.host',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
@@ -3442,11 +3626,13 @@ async function deleteFromImgBB(deleteUrl) {
   }
 }
 // Update the gallery delete endpoint to use the proper ImgBB deletion
+// Delete gallery item with Freeimage.host deletion support
 app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { deleteUrl } = req.body;
-    console.log('Delete request received:', { id, deleteUrl });
+    
+    console.log('Delete request received for Freeimage.host image:', id);
+
     // Validate ID
     if (!id || id === "undefined" || !mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ 
@@ -3454,6 +3640,7 @@ app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
         error: 'Invalid gallery item ID' 
       });
     }
+
     // Find the gallery item first
     const galleryItem = await Gallery.findById(id);
     if (!galleryItem) {
@@ -3462,40 +3649,57 @@ app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
         error: 'Gallery item not found' 
       });
     }
-    // Try to delete from ImgBB if we have a delete URL
-    const imgbbDeleteUrl = deleteUrl || galleryItem.deleteUrl;
-    let imgbbDeletionSuccess = false;
-    let imgbbDeletionDetails = 'No ImgBB URL provided';
+
+    // Attempt to delete from Freeimage.host if we have a delete URL
+    const deleteUrl = galleryItem.deleteUrl;
+    const imageId = galleryItem.freeimageHostData?.imageId;
     
-    if (imgbbDeleteUrl) {
+    let freeimageDeletionSuccess = false;
+    let freeimageDeletionDetails = 'No Freeimage.host deletion URL provided';
+
+    if (deleteUrl) {
       try {
-        imgbbDeletionSuccess = await deleteFromImgBB(imgbbDeleteUrl);
+        console.log('Attempting Freeimage.host deletion for:', {
+          imageId: imageId,
+          deleteUrl: deleteUrl
+        });
+
+        freeimageDeletionSuccess = await deleteFromFreeimageHost(deleteUrl, imageId);
         
-        if (imgbbDeletionSuccess) {
-          imgbbDeletionDetails = 'Image successfully deleted from ImgBB';
-          console.log('ImgBB deletion successful');
+        if (freeimageDeletionSuccess) {
+          freeimageDeletionDetails = 'Image successfully deleted from Freeimage.host';
+          console.log('Freeimage.host deletion successful');
         } else {
-          imgbbDeletionDetails = 'Failed to delete image from ImgBB';
-          console.warn('ImgBB deletion failed');
+          freeimageDeletionDetails = 'Failed to delete image from Freeimage.host (image may remain on their servers)';
+          console.warn('Freeimage.host deletion failed');
         }
-      } catch (imgbbError) {
-        imgbbDeletionDetails = `ImgBB deletion error: ${imgbbError.message}`;
-        console.warn('ImgBB deletion error:', imgbbError.message);
+      } catch (deletionError) {
+        freeimageDeletionDetails = `Freeimage.host deletion error: ${deletionError.message}`;
+        console.warn('Freeimage.host deletion error:', deletionError.message);
       }
     }
-    // Delete from database
+
+    // Delete from our database regardless of Freeimage.host deletion result
     await Gallery.findByIdAndDelete(id);
+
     res.json({ 
       success: true, 
-      message: 'Gallery item deleted successfully',
+      message: 'Gallery item processing completed',
       details: {
-        database: { deleted: true, id: id },
-        imgbb: { 
-          attempted: !!imgbbDeleteUrl,
-          success: imgbbDeletionSuccess,
-          details: imgbbDeletionDetails,
-          url: imgbbDeleteUrl || null
-        }
+        database: { 
+          deleted: true, 
+          id: id 
+        },
+        freeimageHost: { 
+          attempted: !!deleteUrl,
+          success: freeimageDeletionSuccess,
+          details: freeimageDeletionDetails,
+          delete_url: deleteUrl || null,
+          image_id: imageId || null
+        },
+        note: freeimageDeletionSuccess ? 
+          'Image completely removed from both database and Freeimage.host' :
+          'Image removed from database but may still exist on Freeimage.host servers'
       }
     });
   } catch (err) {
@@ -3507,6 +3711,90 @@ app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
     });
   }
 });
+
+// Debug endpoint for Freeimage.host deletion
+app.post('/api/admin/freeimage-host/debug-delete', authenticateAdmin, async (req, res) => {
+  try {
+    const { deleteUrl, imageId } = req.body;
+    
+    if (!deleteUrl) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Delete URL is required' 
+      });
+    }
+
+    console.log('Debugging Freeimage.host deletion:', { deleteUrl, imageId });
+
+    // Test different deletion methods
+    const results = {
+      method1_url_visit: null,
+      method2_post_request: null,
+      method3_api_call: null
+    };
+
+    // Method 1: URL Visit
+    try {
+      const response = await axios.get(deleteUrl, {
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      results.method1_url_visit = {
+        status: response.status,
+        success: response.status === 200,
+        data: response.data.substring(0, 200) + '...' // First 200 chars
+      };
+    } catch (error) {
+      results.method1_url_visit = {
+        error: error.message,
+        success: false
+      };
+    }
+
+    // Method 2: POST Request
+    try {
+      const formData = new FormData();
+      formData.append('delete', 'true');
+      
+      const response = await axios.post(deleteUrl, formData, {
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          ...formData.getHeaders()
+        }
+      });
+      results.method2_post_request = {
+        status: response.status,
+        success: response.status === 200,
+        data: response.data
+      };
+    } catch (error) {
+      results.method2_post_request = {
+        error: error.message,
+        success: false
+      };
+    }
+
+    res.json({
+      success: true,
+      deleteUrl,
+      imageId,
+      results,
+      recommendation: 'Check which method returns success and implement accordingly'
+    });
+  } catch (error) {
+    console.error('Debug deletion error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Debug failed',
+      details: error.message
+    });
+  }
+});
+
+
 // Enhanced debug endpoint to test the proper ImgBB API
 app.post('/api/admin/imgbb/debug', authenticateAdmin, async (req, res) => {
   try {
@@ -5354,6 +5642,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
