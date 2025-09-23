@@ -45,7 +45,6 @@ console.log('SimpleWebAuthn imported:', {
   verifyAuthenticationResponse: typeof verifyAuthenticationResponse
 });
 
-
 // ADD THE FUNCTION HERE - after requires, before routes
 // Replace the uint8ArrayToBase64url function with this improved version
 function uint8ArrayToBase64url(input) {
@@ -241,7 +240,6 @@ app.use(session({
   }),
 }));
 
-
 // Add session debugging middleware
 app.use((req, res, next) => {
   console.log('Session debug:', {
@@ -249,7 +247,9 @@ app.use((req, res, next) => {
     hasChallenge: !!req.session.webauthnChallenge,
     challenge: req.session.webauthnChallenge ? 
       req.session.webauthnChallenge.substring(0, 20) + '...' : null,
-    hasEmail: !!req.session.webauthnEmail
+    hasEmail: !!req.session.webauthnEmail,
+    hasFirstFactor: !!req.session.firstFactorVerified,
+    adminEmail: req.session.adminEmail
   });
   next();
 });
@@ -300,7 +300,7 @@ const upload = multer({
 });
 
 // Email Transporter
-const transporter = nodemailer.createTransport({
+const transporter = nodemailer.createTransporter({
   host: 'smtp.hostinger.com',
   port: 465,
   secure: true,
@@ -794,7 +794,9 @@ app.use((req, res, next) => {
   next();
 });
 
-// Admin Login (Fixed - No external API call)
+// ===== ADMIN LOGIN ENDPOINTS ===== //
+
+// Admin Login (First Factor - Email/Password)
 app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -843,6 +845,24 @@ app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) =
     const clientIP = req.ip || req.connection.remoteAddress;
     failedAttempts.delete(clientIP);
 
+    // Set session variables to track first factor completion
+    req.session.adminEmail = email;
+    req.session.firstFactorVerified = true;
+    req.session.firstFactorTimestamp = Date.now();
+    
+    // Ensure session is saved
+    await new Promise((resolve, reject) => {
+      req.session.save((err) => {
+        if (err) {
+          console.error('Failed to save session after login:', err);
+          reject(err);
+        } else {
+          console.log('Login session saved successfully');
+          resolve();
+        }
+      });
+    });
+
     // Determine 2FA options
     const hasWebAuthn = admin.webauthnCredentials.length > 0;
     const otpEnabled = true; // You can make this a per-admin setting
@@ -864,6 +884,89 @@ app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) =
   }
 });
 
+// Route to verify OTP for admin login (Second Factor)
+app.post('/api/admin/verify-otp', checkIPBlacklist, async (req, res) => {
+    try {
+        const { idToken, email } = req.body;
+        
+        // Check if first factor was completed
+        if (!req.session.firstFactorVerified || !req.session.adminEmail) {
+            return res.status(400).json({ 
+                error: 'First factor (email/password) not verified. Please login again.',
+                code: 'FIRST_FACTOR_NOT_VERIFIED'
+            });
+        }
+        
+        // Verify email matches session
+        if (email !== req.session.adminEmail) {
+            return res.status(400).json({ 
+                error: 'Email mismatch with session',
+                code: 'EMAIL_MISMATCH'
+            });
+        }
+        
+        // Check if session is too old (5 minutes)
+        if (Date.now() - req.session.firstFactorTimestamp > 5 * 60 * 1000) {
+            req.session.firstFactorVerified = false;
+            req.session.adminEmail = null;
+            await req.session.save();
+            return res.status(400).json({ 
+                error: 'Session expired. Please login again.',
+                code: 'SESSION_EXPIRED'
+            });
+        }
+        
+        if (!idToken) {
+            return res.status(400).json({ error: 'ID token is required' });
+        }
+        
+        // Verify the Firebase ID token
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        
+        // Check if the phone number is in the admin list
+        const phoneNumber = decodedToken.phone_number;
+        const adminPhones = process.env.FIREBASE_ADMIN_PHONES 
+            ? process.env.FIREBASE_ADMIN_PHONES.split(',') 
+            : [];
+        
+        if (!adminPhones.includes(phoneNumber)) {
+            return res.status(401).json({ error: 'Unauthorized phone number' });
+        }
+        
+        // Find admin by email
+        const admin = await Admin.findOne({ email });
+        if (!admin) {
+            return res.status(401).json({ error: 'Admin account not found' });
+        }
+        
+        // Generate JWT token for admin access
+        const token = jwt.sign(
+            { 
+                email: admin.email, 
+                role: 'admin',
+                uid: decodedToken.uid 
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: '8h' }
+        );
+        
+        // Clear session variables
+        req.session.firstFactorVerified = false;
+        req.session.adminEmail = null;
+        req.session.firstFactorTimestamp = null;
+        await req.session.save();
+        
+        res.json({ 
+            success: true, 
+            token,
+            message: 'OTP verified successfully' 
+        });
+        
+    } catch (err) {
+        console.error('Error verifying OTP:', err);
+        res.status(401).json({ error: 'Invalid OTP' });
+    }
+});
 
 // Route to check if phone number is registered for admin
 app.post('/api/admin/check-phone', checkIPBlacklist, async (req, res) => {
@@ -911,63 +1014,6 @@ app.post('/api/admin/check-phone', checkIPBlacklist, async (req, res) => {
     console.error('Error checking phone:', err);
     res.status(500).json({ error: 'Server error' });
   }
-});
-
-// Route to verify OTP for admin login
-app.post('/api/admin/verify-otp', checkIPBlacklist, async (req, res) => {
-    try {
-        const { idToken, email } = req.body;
-        
-        if (!idToken) {
-            return res.status(400).json({ error: 'ID token is required' });
-        }
-        
-        // Verify the Firebase ID token
-        const decodedToken = await admin.auth().verifyIdToken(idToken);
-        
-        // Check if the phone number is in the admin list
-        const phoneNumber = decodedToken.phone_number;
-        const adminPhones = process.env.FIREBASE_ADMIN_PHONES 
-            ? process.env.FIREBASE_ADMIN_PHONES.split(',') 
-            : [];
-        
-        if (!adminPhones.includes(phoneNumber)) {
-            return res.status(401).json({ error: 'Unauthorized phone number' });
-        }
-        
-        // Verify admin credentials (email/password) first
-        try {
-            // This simulates checking against your admin database
-            // Replace with your actual admin verification logic
-            const adminUser = await Admin.findOne({ email });
-            if (!adminUser) {
-                return res.status(401).json({ error: 'Invalid admin credentials' });
-            }
-            
-            // Generate JWT token for admin access
-            const token = jwt.sign(
-                { 
-                    email: adminUser.email, 
-                    role: 'admin',
-                    uid: decodedToken.uid 
-                },
-                process.env.JWT_SECRET,
-                { expiresIn: '8h' }
-            );
-            
-            res.json({ 
-                success: true, 
-                token,
-                message: 'OTP verified successfully' 
-            });
-        } catch (error) {
-            res.status(401).json({ error: 'Invalid admin credentials' });
-        }
-        
-    } catch (err) {
-        console.error('Error verifying OTP:', err);
-        res.status(401).json({ error: 'Invalid OTP' });
-    }
 });
 
 // Route to unblock IP (for other admins)
@@ -1219,7 +1265,6 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
   }
 });
 
-
 // ===== Debug Routes ===== //
 
 app.get('/api/debug/cookies', (req, res) => {
@@ -1249,7 +1294,6 @@ app.get('/api/debug/session-info', authenticateAdmin, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 
 // Generate authentication options
 app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimit, async (req, res) => {
@@ -1286,7 +1330,6 @@ app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimi
 
     // Store the challenge and email in the session
     req.session.webauthnChallenge = uint8ArrayToBase64url(options.challenge);
-
     req.session.webauthnEmail = email;
 
     // Ensure session is saved
@@ -1317,7 +1360,6 @@ app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimi
   }
 });
 
-// Verify registration
 // Verify registration
 app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnRateLimit, async (req, res) => {
   try {
@@ -1417,7 +1459,6 @@ app.get('/api/debug/session', authenticateAdmin, (req, res) => {
     timestamp: req.session.webauthnTimestamp
   });
 });
-
 
 // Verify authentication
 app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (req, res) => {
@@ -1579,9 +1620,6 @@ app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (
   }
 });
 
-
-
-
 // Get admin's WebAuthn credentials
 app.get('/api/admin/webauthn/credentials', authenticateAdmin, async (req, res) => {
   try {
@@ -1734,7 +1772,6 @@ app.post('/api/admin/webauthn/debug-base64url', authenticateAdmin, (req, res) =>
   }
 });
 
-
 // ===== WEB AUTHN LOGIN ENDPOINTS =====
 
 // Check if admin has WebAuthn credentials
@@ -1773,11 +1810,38 @@ app.post('/api/admin/webauthn/check-credentials', async (req, res) => {
   }
 });
 
-// Simple WebAuthn authentication options generation
+// Simple WebAuthn authentication options generation (Second Factor)
 app.post('/api/admin/webauthn/login/generate-options', async (req, res) => {
   try {
     const { email } = req.body;
     console.log('WebAuthn login request for email:', email);
+
+    // Check if first factor was completed
+    if (!req.session.firstFactorVerified || !req.session.adminEmail) {
+      return res.status(400).json({
+        error: 'First factor (email/password) not verified. Please login again.',
+        code: 'FIRST_FACTOR_NOT_VERIFIED'
+      });
+    }
+    
+    // Verify email matches session
+    if (email !== req.session.adminEmail) {
+      return res.status(400).json({ 
+        error: 'Email mismatch with session',
+        code: 'EMAIL_MISMATCH'
+      });
+    }
+    
+    // Check if session is too old (5 minutes)
+    if (Date.now() - req.session.firstFactorTimestamp > 5 * 60 * 1000) {
+      req.session.firstFactorVerified = false;
+      req.session.adminEmail = null;
+      await req.session.save();
+      return res.status(400).json({ 
+        error: 'Session expired. Please login again.',
+        code: 'SESSION_EXPIRED'
+      });
+    }
 
     if (!email) {
       return res.status(400).json({
@@ -1801,13 +1865,12 @@ app.post('/api/admin/webauthn/login/generate-options', async (req, res) => {
       });
     }
 
-    // ✅ Allow only internal platform authenticators (Windows Hello, Touch ID, etc.)
+    // Allow only internal platform authenticators (Windows Hello, Touch ID, etc.)
     const allowCredentials = admin.webauthnCredentials.map(cred => ({
-  id: cred.credentialID, // keep as base64url string
-  type: "public-key",
-  transports: ["internal"]
-}));
-
+      id: cred.credentialID, // keep as base64url string
+      type: "public-key",
+      transports: ["internal"]
+    }));
 
     const challenge = require('crypto').randomBytes(32).toString('base64url');
 
@@ -1824,9 +1887,9 @@ app.post('/api/admin/webauthn/login/generate-options', async (req, res) => {
       allowCredentials,
       rpId: rpID,
       timeout: 60000,
-      userVerification: 'required', // ✅ force biometric/Pin instead of "preferred"
+      userVerification: 'required', // force biometric/Pin instead of "preferred"
       authenticatorSelection: {
-        authenticatorAttachment: 'platform' // ✅ ensure only inbuilt device auth
+        authenticatorAttachment: 'platform' // ensure only inbuilt device auth
       }
     });
 
@@ -1839,8 +1902,7 @@ app.post('/api/admin/webauthn/login/generate-options', async (req, res) => {
   }
 });
 
-
-// Simple WebAuthn authentication verification
+// Simple WebAuthn authentication verification (Second Factor)
 app.post('/api/admin/webauthn/login/verify', async (req, res) => {
   try {
     const { credential, email } = req.body;
@@ -1853,6 +1915,36 @@ app.post('/api/admin/webauthn/login/verify', async (req, res) => {
         success: false,
         error: 'Invalid credential data',
         code: 'INVALID_CREDENTIAL'
+      });
+    }
+
+    // Check if first factor was completed
+    if (!req.session.firstFactorVerified || !req.session.adminEmail) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'First factor (email/password) not verified. Please login again.',
+        code: 'FIRST_FACTOR_NOT_VERIFIED'
+      });
+    }
+    
+    // Verify email matches session
+    if (email !== req.session.adminEmail) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Email mismatch with session',
+        code: 'EMAIL_MISMATCH'
+      });
+    }
+    
+    // Check if session is too old (5 minutes)
+    if (Date.now() - req.session.firstFactorTimestamp > 5 * 60 * 1000) {
+      req.session.firstFactorVerified = false;
+      req.session.adminEmail = null;
+      await req.session.save();
+      return res.status(400).json({ 
+        success: false,
+        error: 'Session expired. Please login again.',
+        code: 'SESSION_EXPIRED'
       });
     }
 
@@ -1911,6 +2003,9 @@ app.post('/api/admin/webauthn/login/verify', async (req, res) => {
     // Clear session
     req.session.webauthnChallenge = null;
     req.session.webauthnEmail = null;
+    req.session.firstFactorVerified = false;
+    req.session.adminEmail = null;
+    req.session.firstFactorTimestamp = null;
     await req.session.save();
 
     // Generate JWT token
@@ -1967,7 +2062,6 @@ app.get('/api/admin/webauthn/debug/:email', async (req, res) => {
   }
 });
 
-
 // ===== COUPON ROUTES ===== //
 
 app.post('/api/admin/coupons', authenticateAdmin, async (req, res) => {
@@ -1985,7 +2079,7 @@ app.get('/api/admin/coupons', authenticateAdmin, async (req, res) => {
     const coupons = await Coupon.find().sort({ createdAt: -1 });
     res.json({ success: true, coupons });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to fetch coupons' });
   }
 });
 
@@ -2003,7 +2097,7 @@ app.delete('/api/admin/coupons/:id', authenticateAdmin, async (req, res) => {
     await Coupon.findByIdAndDelete(req.params.id);
     res.json({ success: true, message: 'Coupon deleted successfully' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to delete coupon' });
   }
 });
 
@@ -3080,11 +3174,11 @@ app.get('/api/admin/users/stats', authenticateAdmin, async (req, res) => {
 // ==================== IMAGE UPLOAD & GALLERY API SECTION ====================
 
 // Add this endpoint to handle image uploads to ImgBB
+// Single image upload endpoint
 app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (req, res) => {
   try {
-    console.log('Image upload request received');
-
-    // Validate file existence
+    console.log('Single image upload request received');
+    
     if (!req.file) {
       return res.status(400).json({ 
         success: false,
@@ -3092,131 +3186,105 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
       });
     }
 
+    const file = req.file;
+    console.log('Processing file:', file.originalname, 'Size:', file.size, 'Type:', file.mimetype);
+
     // Validate file type
-    if (!req.file.mimetype.startsWith('image/')) {
+    if (!file.mimetype.startsWith('image/')) {
       return res.status(400).json({ 
         success: false,
-        error: 'File must be an image' 
+        error: 'Only image files are allowed' 
       });
     }
 
     // Validate file size
-    if (req.file.size > 32 * 1024 * 1024) {
+    if (file.size > 32 * 1024 * 1024) {
       return res.status(400).json({ 
         success: false,
-        error: 'Image size must be less than 32MB' 
+        error: 'File too large (max 32MB)' 
       });
     }
-
-    console.log('Uploading to ImgBB:', {
-      filename: req.file.originalname,
-      size: req.file.size,
-      mimetype: req.file.mimetype
-    });
 
     // Convert to base64
-    const base64Image = req.file.buffer.toString('base64');
+    const base64Image = file.buffer.toString('base64');
     
-    // Create URLSearchParams for ImgBB
-    const params = new URLSearchParams();
-    params.append('key', process.env.IMGBB_API_KEY);
-    params.append('image', base64Image);
-    params.append('name', req.file.originalname);
+    // Create FormData for ImgBB
+    const formData = new FormData();
+    formData.append('key', process.env.IMGBB_API_KEY);
+    formData.append('image', base64Image);
+    formData.append('name', file.originalname.substring(0, 100));
 
-    const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
-    if (!IMGBB_API_KEY) {
-      console.error('ImgBB API key not configured');
-      return res.status(500).json({ 
-        success: false,
-        error: 'Image upload service not configured' 
-      });
-    }
+    console.log('Uploading to ImgBB:', file.originalname);
 
     // Upload to ImgBB
     const imgbbResponse = await axios.post(
       'https://api.imgbb.com/1/upload',
-      params.toString(),
+      formData,
       {
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
+          ...formData.getHeaders(),
           'Accept': 'application/json'
         },
         timeout: 30000
       }
     );
 
-    console.log('ImgBB upload response:', imgbbResponse.data);
-
-    if (!imgbbResponse.data.success) {
-      console.error('ImgBB upload failed:', imgbbResponse.data);
-      return res.status(400).json({ 
-        success: false,
-        error: imgbbResponse.data.error?.message || 'Upload to image service failed',
-        imgbbError: imgbbResponse.data.error
+    console.log('ImgBB Response status:', imgbbResponse.status);
+    
+    if (imgbbResponse.data.success) {
+      const imgbbData = imgbbResponse.data;
+      
+      // Create gallery entry
+      const galleryItem = new Gallery({
+        name: file.originalname,
+        description: '',
+        category: 'uploads',
+        imageUrl: imgbbData.data.url,
+        thumbnailUrl: imgbbData.data.thumb?.url || imgbbData.data.url,
+        deleteUrl: imgbbData.data.delete_url,
+        imgbbId: imgbbData.data.id,
+        size: file.size,
+        mimetype: file.mimetype
       });
+
+      await galleryItem.save();
+
+      res.json({
+        success: true,
+        message: 'Image uploaded successfully',
+        image: {
+          id: galleryItem._id,
+          url: imgbbData.data.url,
+          thumb: imgbbData.data.thumb?.url || imgbbData.data.url,
+          deleteUrl: imgbbData.data.delete_url,
+          imageId: imgbbData.data.id
+        }
+      });
+    } else {
+      throw new Error(imgbbResponse.data.error?.message || 'Upload failed');
     }
-
-    const imgbbData = imgbbResponse.data.data;
-
-    console.log('Image uploaded successfully:', {
-      id: imgbbData.id,
-      url: imgbbData.url,
-      deleteUrl: imgbbData.delete_url
-    });
-
-    // Save to MongoDB
-    const galleryItem = new Gallery({
-      name: req.body.name || req.file.originalname,
-      description: req.body.description || '',
-      category: req.body.category || 'uploads',
-      imageUrl: imgbbData.url,
-      thumbnailUrl: imgbbData.thumb?.url || imgbbData.url,
-      deleteUrl: imgbbData.delete_url,
-      imgbbId: imgbbData.id,
-      uploadedAt: new Date()
-    });
-
-    await galleryItem.save();
-
-    res.json({
-      success: true,
-      galleryId: galleryItem._id,
-      url: imgbbData.url,
-      thumb: imgbbData.thumb?.url || imgbbData.url,
-      medium: imgbbData.medium?.url || imgbbData.url,
-      deleteUrl: imgbbData.delete_url,
-      imageId: imgbbData.id
-    });
 
   } catch (error) {
     console.error('Image upload error:', error);
-
+    
     let errorMessage = 'Failed to upload image';
-    let statusCode = 500;
-
     if (error.response) {
-      errorMessage = `ImgBB API Error: ${error.response.status}`;
-      statusCode = error.response.status;
-      console.error('ImgBB API response error:', error.response.data);
-    } else if (error.request) {
-      errorMessage = 'Network error - could not connect to image service';
-    } else {
-      errorMessage = error.message;
+      errorMessage = `ImgBB API Error: ${error.response.status} - ${error.response.data?.error?.message || 'Unknown error'}`;
     }
-
-    res.status(statusCode).json({
+    
+    res.status(500).json({ 
       success: false,
       error: errorMessage,
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
-      imgbbError: error.response?.data
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
 
 // Add this endpoint to handle multiple image uploads
+// Fix the image upload endpoint
 app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), async (req, res) => {
   try {
-    console.log('Multiple image upload request received:', req.files.length);
+    console.log('Multiple image upload request received:', req.files ? req.files.length : 0);
     
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ 
@@ -3228,9 +3296,11 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
     const results = [];
     const errors = [];
 
-    // Process each image sequentially to avoid rate limiting
+    // Process each image
     for (const file of req.files) {
       try {
+        console.log('Processing file:', file.originalname, 'Size:', file.size, 'Type:', file.mimetype);
+
         // Validate file type
         if (!file.mimetype.startsWith('image/')) {
           errors.push({
@@ -3240,7 +3310,7 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
           continue;
         }
 
-        // Validate file size (ImgBB has limits)
+        // Validate file size (ImgBB has 32MB limit)
         if (file.size > 32 * 1024 * 1024) {
           errors.push({
             filename: file.originalname,
@@ -3249,53 +3319,48 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
           continue;
         }
 
-        console.log('Uploading to ImgBB:', file.originalname);
-
         // Convert to base64
         const base64Image = file.buffer.toString('base64');
         
-        // Create URLSearchParams instead of FormData for ImgBB
-        const params = new URLSearchParams();
-        params.append('key', process.env.IMGBB_API_KEY);
-        params.append('image', base64Image);
-        params.append('name', file.originalname);
+        // Create proper FormData for ImgBB
+        const formData = new FormData();
+        formData.append('key', process.env.IMGBB_API_KEY);
+        formData.append('image', base64Image);
         
-        // Optional: Add expiration if needed
-        // params.append('expiration', '600'); // 10 minutes
-
-        const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
+        // Optional parameters
+        formData.append('name', file.originalname.substring(0, 100)); // Limit name length
         
-        if (!IMGBB_API_KEY) {
-          throw new Error('ImgBB API key not configured');
-        }
+        console.log('Uploading to ImgBB:', file.originalname, 'Size:', base64Image.length, 'chars');
 
-        // Upload to ImgBB with correct content type
+        // Upload to ImgBB with proper headers
         const imgbbResponse = await axios.post(
           'https://api.imgbb.com/1/upload',
-          params.toString(), // Send as URL-encoded form data
+          formData,
           {
             headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
+              ...formData.getHeaders(),
               'Accept': 'application/json'
             },
             timeout: 30000
           }
         );
 
-        console.log('ImgBB Response:', imgbbResponse.data);
-
+        console.log('ImgBB Response status:', imgbbResponse.status);
+        
         if (imgbbResponse.data.success) {
-          const imgbbData = imgbbData.data;
+          const imgbbData = imgbbResponse.data;
           
           // Create gallery entry
           const galleryItem = new Gallery({
             name: file.originalname,
             description: '',
             category: 'uploads',
-            imageUrl: imgbbData.data.url, // Main image URL
+            imageUrl: imgbbData.data.url,
             thumbnailUrl: imgbbData.data.thumb?.url || imgbbData.data.url,
             deleteUrl: imgbbData.data.delete_url,
-            imgbbId: imgbbData.data.id
+            imgbbId: imgbbData.data.id,
+            size: file.size,
+            mimetype: file.mimetype
           });
 
           await galleryItem.save();
@@ -3308,12 +3373,16 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
             thumb: imgbbData.data.thumb?.url || imgbbData.data.url,
             medium: imgbbData.data.medium?.url || imgbbData.data.url,
             deleteUrl: imgbbData.data.delete_url,
-            imageId: imgbbData.data.id
+            imageId: imgbbData.data.id,
+            size: imgbbData.data.size
           });
+          
+          console.log('Successfully uploaded:', file.originalname);
         } else {
           errors.push({
             filename: file.originalname,
-            error: imgbbResponse.data.error?.message || 'Upload failed'
+            error: imgbbResponse.data.error?.message || 'Upload failed',
+            imgbbError: imgbbResponse.data.error
           });
         }
 
@@ -3323,15 +3392,15 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
       } catch (fileError) {
         console.error(`Error uploading ${file.originalname}:`, fileError);
         
-        // More detailed error information
         let errorMessage = fileError.message;
         if (fileError.response) {
-          errorMessage = `ImgBB API Error: ${fileError.response.status} - ${JSON.stringify(fileError.response.data)}`;
+          errorMessage = `ImgBB API Error: ${fileError.response.status} - ${fileError.response.data?.error?.message || JSON.stringify(fileError.response.data)}`;
         }
         
         errors.push({
           filename: file.originalname,
-          error: errorMessage
+          error: errorMessage,
+          details: fileError.response?.data
         });
       }
     }
@@ -5380,37 +5449,3 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
