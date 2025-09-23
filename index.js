@@ -3082,127 +3082,167 @@ app.get('/api/admin/users/stats', authenticateAdmin, async (req, res) => {
 // Add this endpoint to handle image uploads to ImgBB
 // Fixed image upload endpoint
 app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (req, res) => {
-    try {
-        console.log('Image upload request received');
-        
-        // Validate file existence
-        if (!req.file) {
-            return res.status(400).json({ 
-                success: false,
-                error: 'No image file provided' 
-            });
-        }
-        
-        // Validate file type
-        if (!req.file.mimetype.startsWith('image/')) {
-            return res.status(400).json({ 
-                success: false,
-                error: 'File must be an image' 
-            });
-        }
-        
-        // Validate file size (max 32MB for ImgBB free tier)
-        if (req.file.size > 32 * 1024 * 1024) {
-            return res.status(400).json({ 
-                success: false,
-                error: 'Image size must be less than 32MB' 
-            });
-        }
-        
-        console.log('Uploading to ImgBB:', {
-            filename: req.file.originalname,
-            size: req.file.size,
-            mimetype: req.file.mimetype
-        });
-        
-        // Convert buffer to base64 for ImgBB
-        const base64Image = req.file.buffer.toString('base64');
-        
-        // Create form data for ImgBB API
-        const formData = new FormData();
-        formData.append('image', base64Image); // ImgBB expects base64 string
-        
-        // Get ImgBB API key
-        const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
-        if (!IMGBB_API_KEY) {
-            console.error('ImgBB API key not configured');
-            return res.status(500).json({ 
-                success: false,
-                error: 'Image upload service not configured' 
-            });
-        }
-        
-        // Upload to ImgBB with correct API URL
-        const imgbbResponse = await axios.post(
-            `https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`,
-            formData,
-            { 
-                headers: formData.getHeaders(),
-                timeout: 30000 
-            }
-        );
-        
-        if (!imgbbResponse.data.success) {
-            console.error('ImgBB upload failed:', imgbbResponse.data.error);
-            return res.status(500).json({ 
-                success: false,
-                error: imgbbResponse.data.error?.message || 'Upload to image service failed' 
-            });
-        }
-        
-        const imgbbData = imgbbResponse.data.data;
-        console.log('Image uploaded successfully:', {
-            id: imgbbData.id,
-            url: imgbbData.url,
-            deleteUrl: imgbbData.delete_url
-        });
-        
-        // Save to MongoDB
-        const galleryItem = new Gallery({
-            name: req.body.name || req.file.originalname,
-            description: req.body.description || '',
-            category: req.body.category || 'uploads',
-            imageUrl: imgbbData.url,
-            thumbnailUrl: imgbbData.thumb?.url || imgbbData.url,
-            deleteUrl: imgbbData.delete_url,
-            imgbbId: imgbbData.id,
-            uploadedAt: new Date()
-        });
-        
-        await galleryItem.save();
-        
-        // Return consistent response structure
-        res.json({
-            success: true,
-            galleryId: galleryItem._id,
-            url: imgbbData.url,
-            thumb: imgbbData.thumb?.url || imgbbData.url,
-            medium: imgbbData.medium?.url || imgbbData.url,
-            deleteUrl: imgbbData.delete_url,
-            imageId: imgbbData.id
-        });
-        
-    } catch (error) {
-        console.error('Image upload error:', error);
-        let errorMessage = 'Failed to upload image';
-        let statusCode = 500;
-        
-        if (error.response) {
-            // ImgBB API error
-            errorMessage = error.response.data.error?.message || 'Image service error';
-            statusCode = error.response.status;
-        } else if (error.request) {
-            errorMessage = 'Network error - could not connect to image service';
-        } else {
-            errorMessage = error.message;
-        }
-        
-        res.status(statusCode).json({
-            success: false,
-            error: errorMessage,
-            details: process.env.NODE_ENV === 'development' ? error.message : undefined
-        });
+  try {
+    console.log('Image upload request received');
+    
+    if (!req.file) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'No image file provided' 
+      });
     }
+
+    // Validate file
+    if (!req.file.mimetype.startsWith('image/')) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'File must be an image' 
+      });
+    }
+
+    // Check file size (ImgBB has 32MB limit)
+    if (req.file.size > 32 * 1024 * 1024) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Image size must be less than 32MB' 
+      });
+    }
+
+    const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
+    
+    if (!IMGBB_API_KEY) {
+      console.error('ImgBB API key not configured');
+      return res.status(500).json({ 
+        success: false,
+        error: 'Image upload service not configured',
+        code: 'IMGBB_NOT_CONFIGURED'
+      });
+    }
+
+    console.log('API Key status:', {
+      hasKey: !!IMGBB_API_KEY,
+      keyPreview: IMGBB_API_KEY.substring(0, 8) + '...'
+    });
+
+    // Convert to base64
+    const base64Image = req.file.buffer.toString('base64');
+    
+    // Create form data with proper formatting
+    const formData = new FormData();
+    formData.append('image', base64Image);
+    
+    // Add optional parameters for better handling
+    formData.append('name', req.file.originalname);
+    formData.append('expiration', '600'); // 10 minutes
+
+    console.log('Uploading to ImgBB...', {
+      filename: req.file.originalname,
+      size: req.file.size,
+      base64Length: base64Image.length
+    });
+
+    const response = await axios.post(
+      `https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`,
+      formData,
+      { 
+        headers: {
+          ...formData.getHeaders(),
+          'Accept': 'application/json',
+        },
+        timeout: 30000,
+        maxContentLength: 50 * 1024 * 1024, // 50MB
+        maxBodyLength: 50 * 1024 * 1024
+      }
+    );
+
+    console.log('ImgBB Response:', {
+      status: response.status,
+      success: response.data.success,
+      data: response.data.data ? {
+        id: response.data.data.id,
+        url: response.data.data.url ? 'Present' : 'Missing',
+        delete_url: response.data.data.delete_url ? 'Present' : 'Missing'
+      } : 'No data'
+    });
+
+    if (!response.data.success) {
+      console.error('ImgBB API returned error:', response.data);
+      return res.status(400).json({ 
+        success: false,
+        error: response.data.error?.message || 'Upload failed',
+        code: 'IMGBB_API_ERROR',
+        details: response.data
+      });
+    }
+
+    const imgbbData = response.data.data;
+
+    // Save to database
+    const galleryItem = new Gallery({
+      name: req.body.name || req.file.originalname,
+      description: req.body.description || '',
+      category: req.body.category || 'uploads',
+      imageUrl: imgbbData.url,
+      thumbnailUrl: imgbbData.thumb?.url || imgbbData.url,
+      deleteUrl: imgbbData.delete_url,
+      imgbbId: imgbbData.id,
+    });
+
+    await galleryItem.save();
+
+    res.json({
+      success: true,
+      message: 'Image uploaded successfully',
+      data: {
+        id: galleryItem._id,
+        url: imgbbData.url,
+        thumb: imgbbData.thumb?.url,
+        medium: imgbbData.medium?.url,
+        deleteUrl: imgbbData.delete_url
+      }
+    });
+
+  } catch (error) {
+    console.error('Image upload error details:', {
+      name: error.name,
+      message: error.message,
+      code: error.code,
+      status: error.response?.status,
+      data: error.response?.data
+    });
+
+    let errorMessage = 'Failed to upload image';
+    let statusCode = 500;
+
+    if (error.response) {
+      // ImgBB specific errors
+      statusCode = error.response.status;
+      
+      if (error.response.status === 400) {
+        errorMessage = 'Invalid request to image service';
+      } else if (error.response.status === 403) {
+        errorMessage = 'Access denied by image service. Please check your API key.';
+      } else if (error.response.status === 429) {
+        errorMessage = 'Rate limit exceeded. Please try again later.';
+      } else if (error.response.status >= 500) {
+        errorMessage = 'Image service is temporarily unavailable';
+      }
+      
+      // Include ImgBB error details if available
+      if (error.response.data) {
+        errorMessage = error.response.data.error?.message || errorMessage;
+      }
+    } else if (error.request) {
+      errorMessage = 'Cannot connect to image service. Check your network connection.';
+    }
+
+    res.status(statusCode).json({
+      success: false,
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      code: error.response?.data?.error?.code || 'UPLOAD_ERROR'
+    });
+  }
 });
 // Add this endpoint to handle multiple image uploads
 app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), async (req, res) => {
@@ -3533,6 +3573,19 @@ app.post('/api/admin/imgbb/debug', authenticateAdmin, async (req, res) => {
     });
   }
 });
+
+// Add this debug endpoint to verify your API key
+app.get('/api/debug/imgbb-key', authenticateAdmin, (req, res) => {
+  const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
+  res.json({
+    hasKey: !!IMGBB_API_KEY,
+    keyLength: IMGBB_API_KEY ? IMGBB_API_KEY.length : 0,
+    keyPreview: IMGBB_API_KEY ? IMGBB_API_KEY.substring(0, 8) + '...' : 'None',
+    environment: process.env.NODE_ENV
+  });
+});
+
+
 // Get all gallery items
 app.get('/api/admin/gallery', authenticateAdmin, async (req, res) => {
   try {
@@ -5301,5 +5354,6 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
