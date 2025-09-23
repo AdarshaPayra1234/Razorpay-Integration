@@ -798,9 +798,9 @@ app.use((req, res, next) => {
 app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) => {
   try {
     const { email, password } = req.body;
-    
+
     if (!email || !password) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Email and password are required',
         details: {
           email: !email,
@@ -808,78 +808,62 @@ app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) =
         }
       });
     }
-    
+
     // Find admin by email
     const admin = await Admin.findOne({ email });
     if (!admin) {
-      // Track failed attempt
       const clientIP = req.ip || req.connection.remoteAddress;
       const attempts = failedAttempts.get(clientIP) || 0;
       failedAttempts.set(clientIP, attempts + 1);
-      
-      // Check if threshold reached
+
       if (attempts + 1 >= BLACKLIST_THRESHOLD) {
         blacklistedIPs.add(clientIP);
-        return res.status(401).json({ 
-          error: 'Unauthorized. IP has been blocked due to multiple failed attempts.' 
-        });
+        return res.status(401).json({ error: 'Unauthorized. IP blocked due to multiple failed attempts.' });
       }
-      
-      return res.status(401).json({ 
-        error: 'Invalid credentials',
-        details: 'Admin not found'
-      });
+
+      return res.status(401).json({ error: 'Invalid credentials', details: 'Admin not found' });
     }
-    
+
     // Verify password
     const isPasswordValid = await bcrypt.compare(password, admin.password);
     if (!isPasswordValid) {
-      // Track failed attempt
       const clientIP = req.ip || req.connection.remoteAddress;
       const attempts = failedAttempts.get(clientIP) || 0;
       failedAttempts.set(clientIP, attempts + 1);
-      
-      // Check if threshold reached
+
       if (attempts + 1 >= BLACKLIST_THRESHOLD) {
         blacklistedIPs.add(clientIP);
-        return res.status(401).json({ 
-          error: 'Unauthorized. IP has been blocked due to multiple failed attempts.' 
-        });
+        return res.status(401).json({ error: 'Unauthorized. IP blocked due to multiple failed attempts.' });
       }
-      
-      return res.status(401).json({ 
-        error: 'Invalid credentials',
-        details: 'Incorrect password'
-      });
+
+      return res.status(401).json({ error: 'Invalid credentials', details: 'Incorrect password' });
     }
-    
-    // Reset failed attempts for this IP
+
+    // Reset failed attempts
     const clientIP = req.ip || req.connection.remoteAddress;
     failedAttempts.delete(clientIP);
-    
-    // Check if admin has WebAuthn credentials
+
+    // Determine 2FA options
     const hasWebAuthn = admin.webauthnCredentials.length > 0;
-    
-    // Generate JWT token
-    const token = jwt.sign(
-      { email: admin.email, role: 'admin' },
-      process.env.JWT_SECRET,
-      { expiresIn: '8h' }
-    );
-    
-    res.json({ 
-      success: true, 
-      token,
+    const otpEnabled = true; // You can make this a per-admin setting
+
+    // Respond with 2FA requirements; no JWT yet
+    res.json({
+      success: true,
+      message: 'Password verified. Complete 2FA to receive access token.',
+      otpEnabled,
       hasWebAuthn
     });
+
   } catch (err) {
     console.error('Admin login error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Internal server error',
       details: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
   }
 });
+
 
 // Route to check if phone number is registered for admin
 app.post('/api/admin/check-phone', checkIPBlacklist, async (req, res) => {
@@ -5369,6 +5353,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
