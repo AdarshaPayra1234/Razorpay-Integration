@@ -1751,35 +1751,23 @@ app.post('/api/admin/webauthn/debug-base64url', authenticateAdmin, (req, res) =>
 // ===== LOGIN WEB AUTHN ROUTES ===== //
 
 // Check if admin has WebAuthn credentials by email
+// Fix the check-credentials-by-email endpoint
 app.post('/api/admin/webauthn/check-credentials-by-email', async (req, res) => {
   try {
     const { email } = req.body;
     
-    if (!email) {
-      return res.status(400).json({ 
-        error: 'Email is required',
-        code: 'EMAIL_REQUIRED'
-      });
-    }
-
     console.log('Checking WebAuthn credentials for email:', email);
 
     const admin = await Admin.findOne({ email });
     if (!admin) {
       return res.status(404).json({ 
-        error: 'Admin not found',
-        code: 'ADMIN_NOT_FOUND'
+        success: false,
+        error: 'Admin not found'
       });
     }
 
     const hasWebAuthn = admin.webauthnCredentials.length > 0;
     
-    console.log('WebAuthn check result:', {
-      email: email,
-      hasCredentials: hasWebAuthn,
-      credentialCount: admin.webauthnCredentials.length
-    });
-
     res.json({
       success: true,
       hasWebAuthn: hasWebAuthn,
@@ -1789,9 +1777,8 @@ app.post('/api/admin/webauthn/check-credentials-by-email', async (req, res) => {
   } catch (err) {
     console.error('Error checking WebAuthn credentials:', err);
     res.status(500).json({ 
-      error: 'Failed to check WebAuthn credentials',
-      code: 'CHECK_FAILED',
-      details: err.message 
+      success: false,
+      error: 'Failed to check WebAuthn credentials'
     });
   }
 });
@@ -1826,18 +1813,18 @@ app.post('/api/admin/webauthn/generate-auth-options-login', async (req, res) => 
       });
     }
 
-    // Format allowCredentials from stored credentials
+    // ✅ FIX: Use the credential IDs as they are (already base64url strings)
     const allowCredentials = admin.webauthnCredentials.map(cred => ({
-      id: base64urlToBuffer(cred.credentialID),
+      id: cred.credentialID, // Already stored as base64url string
       type: 'public-key',
-      transports: ['internal', 'hybrid', 'usb']
+      transports: ['internal'] // Focus on internal/built-in authenticators
     }));
 
-    // Generate authentication options using the same function as registration
+    // ✅ FIX: Change userVerification to 'required' for built-in auth
     const options = await generateAuthenticationOptions({
       rpID,
       allowCredentials,
-      userVerification: 'preferred',
+      userVerification: 'required', // Changed from 'preferred' to 'required'
       timeout: 60000
     });
 
@@ -1845,22 +1832,18 @@ app.post('/api/admin/webauthn/generate-auth-options-login', async (req, res) => 
     req.session.webauthnChallenge = options.challenge;
     req.session.webauthnEmail = email;
     req.session.webauthnTimestamp = Date.now();
-    req.session.webauthnPurpose = 'login'; // Differentiate from registration
+    req.session.webauthnPurpose = 'login';
 
-    await new Promise((resolve, reject) => {
-      req.session.save(err => err ? reject(err) : resolve());
-    });
+    await req.session.save();
 
     console.log('Login auth session saved with challenge');
 
+    // ✅ FIX: Proper response formatting
     res.json({
-  ...options,
-  challenge: bufferToBase64url(Buffer.from(options.challenge)),
-  allowCredentials: options.allowCredentials ? options.allowCredentials.map(cred => ({
-    ...cred,
-    id: typeof cred.id === 'string' ? cred.id : bufferToBase64url(cred.id)
-  })) : []
-});
+      ...options,
+      challenge: bufferToBase64url(Buffer.from(options.challenge)),
+      allowCredentials: allowCredentials // Use the pre-formatted credentials
+    });
 
   } catch (err) {
     console.error('Error generating login auth options:', err);
@@ -5367,6 +5350,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
