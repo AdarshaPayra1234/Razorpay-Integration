@@ -1790,11 +1790,10 @@ app.post('/api/admin/webauthn/check-credentials', async (req, res) => {
 app.post('/api/admin/webauthn/login/generate-options', async (req, res) => {
   try {
     const { email } = req.body;
-    
     console.log('WebAuthn login request for email:', email);
-    
+
     if (!email) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Email is required',
         code: 'EMAIL_REQUIRED'
       });
@@ -1802,56 +1801,56 @@ app.post('/api/admin/webauthn/login/generate-options', async (req, res) => {
 
     const admin = await Admin.findOne({ email });
     if (!admin) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         error: 'Admin not found',
         code: 'ADMIN_NOT_FOUND'
       });
     }
 
-    // Check if admin has WebAuthn credentials
     if (admin.webauthnCredentials.length === 0) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'No WebAuthn credentials found for this account',
         code: 'NO_CREDENTIALS'
       });
     }
 
-    // Prepare allowCredentials array
+    // ✅ Allow only internal platform authenticators (Windows Hello, Touch ID, etc.)
     const allowCredentials = admin.webauthnCredentials.map(cred => ({
-      id: cred.credentialID, // Already stored as base64url
+      id: cred.credentialID,
       type: 'public-key',
-      transports: ['internal'] // Assuming internal authenticators
+      transports: ['internal']
     }));
 
-    // Generate simple challenge
     const challenge = require('crypto').randomBytes(32).toString('base64url');
-    
-    // Store challenge in session
+
     req.session.webauthnChallenge = challenge;
     req.session.webauthnEmail = email;
     req.session.webauthnTimestamp = Date.now();
-
     await req.session.save();
 
     console.log('Login challenge generated for:', email);
-    
+
     res.json({
       success: true,
       challenge,
       allowCredentials,
       rpId: rpID,
       timeout: 60000,
-      userVerification: 'preferred'
+      userVerification: 'required', // ✅ force biometric/Pin instead of "preferred"
+      authenticatorSelection: {
+        authenticatorAttachment: 'platform' // ✅ ensure only inbuilt device auth
+      }
     });
 
   } catch (err) {
     console.error('Error generating login options:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to generate authentication options',
       code: 'OPTIONS_FAILED'
     });
   }
 });
+
 
 // Simple WebAuthn authentication verification
 app.post('/api/admin/webauthn/login/verify', async (req, res) => {
@@ -5366,6 +5365,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
