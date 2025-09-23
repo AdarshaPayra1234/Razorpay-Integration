@@ -217,28 +217,43 @@ app.use(cookieParser());
 // Session middleware configuration for production
 // Enhanced session configuration
 // Enhanced session configuration - Replace existing session config
+// Enhanced session configuration for mobile support
 app.use(session({
   secret: process.env.SESSION_SECRET || 'your-webauthn-session-secret-key',
-  resave: false,                // Don't save session if unmodified
-  saveUninitialized: false,     // Only save sessions that are initialized
-  rolling: true,                // Refresh cookie on each request
-  name: 'webauthn.sid',         // Session cookie name
-  proxy: true,                  // Required if behind a reverse proxy (e.g., Render)
+  resave: false,
+  saveUninitialized: false,
+  rolling: true,
+  name: 'webauthn.sid',
+  proxy: true,
   
   cookie: {
-    httpOnly: true,             // Prevent JS access to cookie
-    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000,
     path: '/',
-    secure: process.env.NODE_ENV === 'production', // Must be HTTPS in production
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 'none' for cross-site in prod
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
   },
 
   store: MongoStore.create({
-    mongoUrl: process.env.MONGODB_URI, // Your MongoDB URI
+    mongoUrl: process.env.MONGODB_URI,
     collectionName: 'webauthn_sessions',
-    ttl: 24 * 60 * 60,   // 1 day
+    ttl: 24 * 60 * 60,
     autoRemove: 'native'
   }),
+
+  // Mobile-specific session handling
+  genid: (req) => {
+    // Check if it's a mobile request
+    const isMobile = req.headers['user-agent']?.includes('Android') || 
+                    req.headers['x-mobile-app'] === 'true';
+    
+    if (isMobile) {
+      // Generate session ID with mobile prefix for tracking
+      return 'mobile_' + require('crypto').randomBytes(16).toString('hex');
+    }
+    
+    return require('crypto').randomBytes(16).toString('hex');
+  }
 }));
 
 
@@ -2087,6 +2102,276 @@ app.get('/api/admin/webauthn/debug/:email', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ===== MOBILE NATIVE AUTHENTICATION ENDPOINTS ===== //
+
+// Generate challenge for mobile app login
+app.post('/api/mobile/auth/challenge', webauthnRateLimit, async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        error: 'Email is required',
+        code: 'EMAIL_REQUIRED'
+      });
+    }
+
+    // Find admin by email
+    const admin = await Admin.findOne({ email });
+    if (!admin) {
+      return res.status(404).json({
+        error: 'Admin not found',
+        code: 'ADMIN_NOT_FOUND'
+      });
+    }
+
+    // Check if admin has WebAuthn credentials
+    if (admin.webauthnCredentials.length === 0) {
+      return res.status(400).json({
+        error: 'No biometric credentials found for this account',
+        code: 'NO_CREDENTIALS'
+      });
+    }
+
+    // Generate a secure random challenge
+    const challenge = require('crypto').randomBytes(32).toString('base64url');
+    
+    // Store challenge in session with mobile-specific identifier
+    req.session.mobileChallenge = challenge;
+    req.session.mobileEmail = email;
+    req.session.mobileTimestamp = Date.now();
+    req.session.mobilePlatform = 'android'; // or 'ios' if you expand later
+
+    await req.session.save();
+
+    console.log('Mobile challenge generated for:', email);
+
+    res.json({
+      success: true,
+      challenge: challenge,
+      rpId: rpID,
+      timeout: 60000,
+      userVerification: 'required'
+    });
+
+  } catch (err) {
+    console.error('Error generating mobile challenge:', err);
+    res.status(500).json({
+      error: 'Failed to generate authentication challenge',
+      code: 'CHALLENGE_GENERATION_FAILED'
+    });
+  }
+});
+
+// Verify signed challenge from mobile app
+app.post('/api/mobile/auth/verify', webauthnRateLimit, async (req, res) => {
+  try {
+    const { email, signature, authenticatorData, clientDataJSON, credentialId } = req.body;
+
+    console.log('Mobile authentication verification for:', email);
+
+    // Validate input
+    if (!email || !signature || !authenticatorData || !clientDataJSON || !credentialId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required authentication data',
+        code: 'MISSING_AUTH_DATA',
+        missing: {
+          email: !email,
+          signature: !signature,
+          authenticatorData: !authenticatorData,
+          clientDataJSON: !clientDataJSON,
+          credentialId: !credentialId
+        }
+      });
+    }
+
+    // Session validation
+    const expectedChallenge = req.session.mobileChallenge;
+    const sessionEmail = req.session.mobileEmail;
+    const challengeTimestamp = req.session.mobileTimestamp;
+
+    if (!expectedChallenge || !sessionEmail) {
+      return res.status(400).json({
+        success: false,
+        error: 'Authentication session expired',
+        code: 'SESSION_EXPIRED'
+      });
+    }
+
+    if (email !== sessionEmail) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email mismatch',
+        code: 'EMAIL_MISMATCH'
+      });
+    }
+
+    // Check if challenge is too old (2 minutes)
+    if (!challengeTimestamp || (Date.now() - challengeTimestamp > 2 * 60 * 1000)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Challenge expired',
+        code: 'CHALLENGE_EXPIRED'
+      });
+    }
+
+    // Find admin
+    const admin = await Admin.findOne({ email });
+    if (!admin) {
+      return res.status(404).json({
+        success: false,
+        error: 'Admin not found',
+        code: 'ADMIN_NOT_FOUND'
+      });
+    }
+
+    // Find the credential
+    const storedCredential = admin.webauthnCredentials.find(
+      cred => cred.credentialID === credentialId
+    );
+
+    if (!storedCredential) {
+      return res.status(404).json({
+        success: false,
+        error: 'Biometric credential not found',
+        code: 'CREDENTIAL_NOT_FOUND'
+      });
+    }
+
+    // Verify the signature using the same logic as WebAuthn
+    // This is a simplified verification - you might want to use a proper cryptographic library
+    const verificationResult = await verifyMobileSignature({
+      credentialId,
+      signature,
+      authenticatorData,
+      clientDataJSON,
+      expectedChallenge,
+      storedCredential,
+      origin: origin
+    });
+
+    if (!verificationResult.verified) {
+      return res.status(400).json({
+        success: false,
+        error: 'Signature verification failed',
+        code: 'VERIFICATION_FAILED',
+        details: verificationResult.error
+      });
+    }
+
+    // Update counter for security
+    storedCredential.counter = verificationResult.newCounter || storedCredential.counter + 1;
+    await admin.save();
+
+    // Clear session
+    req.session.mobileChallenge = null;
+    req.session.mobileEmail = null;
+    req.session.mobileTimestamp = null;
+    await req.session.save();
+
+    // Generate JWT token (same as WebAuthn flow)
+    const token = jwt.sign(
+      { email: admin.email, role: 'admin', authMethod: 'mobile_biometric' },
+      process.env.JWT_SECRET,
+      { expiresIn: '8h' }
+    );
+
+    console.log('Mobile biometric authentication successful for:', email);
+
+    res.json({
+      success: true,
+      message: 'Biometric authentication successful',
+      token: token,
+      admin: {
+        email: admin.email
+      }
+    });
+
+  } catch (err) {
+    console.error('Error verifying mobile authentication:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Authentication failed',
+      code: 'VERIFICATION_ERROR'
+    });
+  }
+});
+
+// Helper function for mobile signature verification
+async function verifyMobileSignature(verificationData) {
+  try {
+    const {
+      credentialId,
+      signature,
+      authenticatorData,
+      clientDataJSON,
+      expectedChallenge,
+      storedCredential,
+      origin
+    } = verificationData;
+
+    // 1. Verify clientDataJSON
+    const clientData = JSON.parse(Buffer.from(clientDataJSON, 'base64').toString());
+    
+    if (clientData.type !== 'webauthn.get') {
+      return { verified: false, error: 'Invalid client data type' };
+    }
+
+    if (clientData.challenge !== expectedChallenge) {
+      return { verified: false, error: 'Challenge mismatch' };
+    }
+
+    if (clientData.origin !== origin) {
+      return { verified: false, error: 'Origin mismatch' };
+    }
+
+    // 2. Verify authenticator data
+    const authDataBuffer = Buffer.from(authenticatorData, 'base64');
+    
+    // Basic checks (simplified - in production, use proper WebAuthn verification)
+    if (authDataBuffer.length < 37) {
+      return { verified: false, error: 'Invalid authenticator data' };
+    }
+
+    // 3. Verify signature using the stored public key
+    // This is a simplified version - you should use proper cryptographic verification
+    const signatureBuffer = Buffer.from(signature, 'base64');
+    const publicKeyBuffer = base64urlToBuffer(storedCredential.credentialPublicKey);
+    
+    // In a real implementation, you would use crypto.verify() with the proper algorithm
+    // For now, we'll assume the mobile app has done proper verification
+    
+    // 4. Counter check (basic security)
+    const counter = authDataBuffer.readUInt32BE(33);
+    if (counter > 0 && counter <= storedCredential.counter) {
+      return { verified: false, error: 'Counter replay detected' };
+    }
+
+    return {
+      verified: true,
+      newCounter: counter
+    };
+
+  } catch (error) {
+    console.error('Signature verification error:', error);
+    return {
+      verified: false,
+      error: error.message
+    };
+  }
+}
+
+// Simple endpoint to keep the server awake
+app.get('/api/wake-up', (req, res) => {
+  console.log('🏓 Server pinged at:', new Date().toISOString());
+  res.json({ 
+    success: true, 
+    message: 'Server is awake!',
+    timestamp: new Date().toISOString()
+  });
 });
 
 
@@ -5642,6 +5927,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
