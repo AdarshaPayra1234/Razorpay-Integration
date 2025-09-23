@@ -2364,15 +2364,6 @@ async function verifyMobileSignature(verificationData) {
   }
 }
 
-// Simple endpoint to keep the server awake
-app.get('/api/wake-up', (req, res) => {
-  console.log('🏓 Server pinged at:', new Date().toISOString());
-  res.json({ 
-    success: true, 
-    message: 'Server is awake!',
-    timestamp: new Date().toISOString()
-  });
-});
 
 
 // ===== COUPON ROUTES ===== //
@@ -2860,6 +2851,20 @@ app.post('/api/admin/bookings/:id/payment', authenticateAdmin, async (req, res) 
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+app.get('/api/wake-up', (req, res) => {
+  const timestamp = new Date().toISOString();
+  console.log(`🏓 Server pinged at: ${timestamp} from IP: ${req.ip}`);
+  
+  res.json({ 
+    success: true, 
+    message: 'Server is awake and ready!',
+    timestamp: timestamp,
+    serverTime: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+    uptime: process.uptime(),
+    memoryUsage: process.memoryUsage()
+  });
 });
 
 // ===== BOOKING ROUTES ===== //
@@ -5927,6 +5932,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
