@@ -1816,7 +1816,7 @@ app.post('/api/admin/webauthn/login/generate-options', async (req, res) => {
 
     // ✅ Allow only internal platform authenticators (Windows Hello, Touch ID, etc.)
     const allowCredentials = admin.webauthnCredentials.map(cred => ({
-      id: cred.credentialID,
+      id: Buffer.from(cred.credentialID, "base64url"), // ✅ convert back to ArrayBuffer
       type: 'public-key',
       transports: ['internal']
     }));
@@ -5365,6 +5365,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
