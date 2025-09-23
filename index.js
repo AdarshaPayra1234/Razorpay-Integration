@@ -219,25 +219,28 @@ app.use(cookieParser());
 // Enhanced session configuration - Replace existing session config
 app.use(session({
   secret: process.env.SESSION_SECRET || 'your-webauthn-session-secret-key',
-  resave: false,
-  saveUninitialized: false,
+  resave: false,                // Don't save session if unmodified
+  saveUninitialized: false,     // Only save sessions that are initialized
+  rolling: true,                // Refresh cookie on each request
+  name: 'webauthn.sid',         // Session cookie name
+  proxy: true,                  // Required if behind a reverse proxy (e.g., Render)
+  
   cookie: {
-    secure: process.env.NODE_ENV === 'production',
-    httpOnly: true,
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-    maxAge: 24 * 60 * 60 * 1000,
-    path: '/'
+    httpOnly: true,             // Prevent JS access to cookie
+    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    path: '/',
+    secure: process.env.NODE_ENV === 'production', // Must be HTTPS in production
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 'none' for cross-site in prod
   },
+
   store: MongoStore.create({
-    mongoUrl: process.env.MONGODB_URI,
+    mongoUrl: process.env.MONGODB_URI, // Your MongoDB URI
     collectionName: 'webauthn_sessions',
-    ttl: 24 * 60 * 60,
+    ttl: 24 * 60 * 60,   // 1 day
     autoRemove: 'native'
   }),
-  name: 'webauthn.sid',
-  rolling: true,
-  proxy: true
 }));
+
 
 // Add session debugging middleware
 app.use((req, res, next) => {
@@ -5366,6 +5369,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
