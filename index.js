@@ -3177,7 +3177,6 @@ app.get('/api/admin/users/stats', authenticateAdmin, async (req, res) => {
 app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (req, res) => {
   try {
     console.log('Image upload request received');
-
     // ✅ Validate file existence
     if (!req.file) {
       return res.status(400).json({ 
@@ -3185,7 +3184,6 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
         error: 'No image file provided' 
       });
     }
-
     // ✅ Validate file type
     if (!req.file.mimetype.startsWith('image/')) {
       return res.status(400).json({ 
@@ -3193,7 +3191,6 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
         error: 'File must be an image' 
       });
     }
-
     // ✅ Validate file size (max 32MB for ImgBB free tier)
     if (req.file.size > 32 * 1024 * 1024) {
       return res.status(400).json({ 
@@ -3201,18 +3198,15 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
         error: 'Image size must be less than 32MB' 
       });
     }
-
     console.log('Uploading to ImgBB:', {
       filename: req.file.originalname,
       size: req.file.size,
       mimetype: req.file.mimetype
     });
-
     // ✅ Convert buffer to base64 for ImgBB
     const base64Image = req.file.buffer.toString('base64');
     const formData = new FormData();
     formData.append('image', base64Image);
-
     // ✅ Get ImgBB API key
     const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
     if (!IMGBB_API_KEY) {
@@ -3222,14 +3216,12 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
         error: 'Image upload service not configured' 
       });
     }
-
     // ✅ Upload to ImgBB
     const imgbbResponse = await axios.post(
       `https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`,
       formData,
       { headers: formData.getHeaders(), timeout: 30000 }
     );
-
     if (!imgbbResponse.data.success) {
       console.error('ImgBB upload failed:', imgbbResponse.data.error);
       return res.status(500).json({ 
@@ -3237,15 +3229,12 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
         error: imgbbResponse.data.error?.message || 'Upload to image service failed' 
       });
     }
-
     const imgbbData = imgbbResponse.data.data;
-
     console.log('Image uploaded successfully:', {
       id: imgbbData.id,
       url: imgbbData.url,
       deleteUrl: imgbbData.delete_url
     });
-
     // ✅ Save to MongoDB with proper fields for delete later
     const galleryItem = new Gallery({
       name: req.body.name || req.file.originalname,
@@ -3257,9 +3246,7 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
       imgbbId: imgbbData.id,
       uploadedAt: new Date()
     });
-
     await galleryItem.save();
-
     // ✅ Return data for frontend
     res.json({
       success: true,
@@ -3270,13 +3257,10 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
       deleteUrl: imgbbData.delete_url,
       imageId: imgbbData.id
     });
-
   } catch (error) {
     console.error('Image upload error:', error);
-
     let errorMessage = 'Failed to upload image';
     let statusCode = 500;
-
     if (error.response) {
       errorMessage = error.response.data.error?.message || 'Image service error';
       statusCode = error.response.status;
@@ -3287,7 +3271,6 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
     } else {
       errorMessage = error.message;
     }
-
     res.status(statusCode).json({
       success: false,
       error: errorMessage,
@@ -3295,7 +3278,6 @@ app.post('/api/upload-image', authenticateAdmin, upload.single('image'), async (
     });
   }
 });
-
 // Add this endpoint to handle multiple image uploads
 app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), async (req, res) => {
   try {
@@ -3307,10 +3289,8 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
         error: 'No images provided' 
       });
     }
-
     const results = [];
     const errors = [];
-
     // Process each image sequentially to avoid rate limiting
     for (const file of req.files) {
       try {
@@ -3322,7 +3302,6 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
           });
           continue;
         }
-
         // Validate file size
         if (file.size > 32 * 1024 * 1024) {
           errors.push({
@@ -3331,20 +3310,16 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
           });
           continue;
         }
-
         console.log('Uploading to ImgBB:', file.originalname);
-
         // Create form data for ImgBB API
         const formData = new FormData();
         const base64Image = file.buffer.toString('base64');
         formData.append('image', base64Image);
-
         const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
         
         if (!IMGBB_API_KEY) {
           throw new Error('ImgBB API key not configured');
         }
-
         // Upload to ImgBB
         const imgbbResponse = await axios.post(
           `https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`,
@@ -3357,7 +3332,6 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
             timeout: 30000
           }
         );
-
         if (imgbbResponse.data.success) {
           const imgbbData = imgbbResponse.data.data;
           
@@ -3371,9 +3345,7 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
             deleteUrl: imgbbData.delete_url,
             imgbbId: imgbbData.id
           });
-
           await galleryItem.save();
-
           results.push({
             success: true,
             filename: file.originalname,
@@ -3390,7 +3362,6 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
             error: imgbbResponse.data.error?.message || 'Upload failed'
           });
         }
-
         // Add a small delay to avoid rate limiting
         await new Promise(resolve => setTimeout(resolve, 500));
         
@@ -3402,7 +3373,6 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
         });
       }
     }
-
     res.json({
       success: true,
       results,
@@ -3413,7 +3383,6 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
         total: req.files.length
       }
     });
-
   } catch (error) {
     console.error('Multiple image upload error:', error);
     res.status(500).json({ 
@@ -3423,30 +3392,26 @@ app.post('/api/upload-images', authenticateAdmin, upload.array('images', 10), as
     });
   }
 });
-
 // Revised ImgBB deletion utility function
+// Enhanced ImgBB deletion utility function with better success detection
+// Proper ImgBB deletion utility function using the correct API endpoint
 async function deleteFromImgBB(deleteUrl) {
   try {
     if (!deleteUrl) {
       console.warn('No delete URL provided for ImgBB');
       return false;
     }
-
     console.log('Attempting to delete from ImgBB:', deleteUrl);
-
     // Extract image ID and hash from the delete URL
     // URL format: https://ibb.co/$image_id/$image_hash
     const urlParts = deleteUrl.split('/');
     const imageId = urlParts[urlParts.length - 2];
     const imageHash = urlParts[urlParts.length - 1];
-
     if (!imageId || !imageHash) {
       console.error('Could not extract image ID or hash from URL:', deleteUrl);
       return false;
     }
-
     console.log('Extracted image ID:', imageId, 'Hash:', imageHash);
-
     // Create form data for the ImgBB JSON API
     const formData = new FormData();
     formData.append('pathname', `/${imageId}/${imageHash}`);
@@ -3455,11 +3420,9 @@ async function deleteFromImgBB(deleteUrl) {
     formData.append('from', 'resource');
     formData.append('deleting[id]', imageId);
     formData.append('deleting[hash]', imageHash);
-
     // Additional fields that might be required (from browser observation)
     formData.append('_', Date.now().toString()); // timestamp
     formData.append('source', 'image-page');
-
     // Make the POST request to ImgBB's JSON API
     const response = await axios.post('https://ibb.co/json', formData, {
       timeout: 10000,
@@ -3472,10 +3435,8 @@ async function deleteFromImgBB(deleteUrl) {
         'Content-Type': `multipart/form-data; boundary=${formData._boundary}`,
       }
     });
-
     console.log('ImgBB API response status:', response.status);
     console.log('ImgBB API response data:', response.data);
-
     // Check if deletion was successful
     if (response.status === 200) {
       // The response should contain success information
@@ -3500,10 +3461,8 @@ async function deleteFromImgBB(deleteUrl) {
       console.log('ImgBB deletion likely successful (200 status)');
       return true;
     }
-
     console.log('ImgBB deletion failed - non-200 status code:', response.status);
     return false;
-
   } catch (error) {
     console.warn('ImgBB deletion failed:', error.message);
     
@@ -3516,15 +3475,12 @@ async function deleteFromImgBB(deleteUrl) {
     return false;
   }
 }
-
 // Update the gallery delete endpoint to use the proper ImgBB deletion
 app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { deleteUrl } = req.body;
-
     console.log('Delete request received:', { id, deleteUrl });
-
     // Validate ID
     if (!id || id === "undefined" || !mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ 
@@ -3532,7 +3488,6 @@ app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
         error: 'Invalid gallery item ID' 
       });
     }
-
     // Find the gallery item first
     const galleryItem = await Gallery.findById(id);
     if (!galleryItem) {
@@ -3541,7 +3496,6 @@ app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
         error: 'Gallery item not found' 
       });
     }
-
     // Try to delete from ImgBB if we have a delete URL
     const imgbbDeleteUrl = deleteUrl || galleryItem.deleteUrl;
     let imgbbDeletionSuccess = false;
@@ -3563,10 +3517,8 @@ app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
         console.warn('ImgBB deletion error:', imgbbError.message);
       }
     }
-
     // Delete from database
     await Gallery.findByIdAndDelete(id);
-
     res.json({ 
       success: true, 
       message: 'Gallery item deleted successfully',
@@ -3580,7 +3532,6 @@ app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
         }
       }
     });
-
   } catch (err) {
     console.error('Error deleting gallery item:', err);
     res.status(500).json({ 
@@ -3590,33 +3541,27 @@ app.delete('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
     });
   }
 });
-
 // Enhanced debug endpoint to test the proper ImgBB API
 app.post('/api/admin/imgbb/debug', authenticateAdmin, async (req, res) => {
   try {
     const { deleteUrl } = req.body;
-
     if (!deleteUrl) {
       return res.status(400).json({ 
         success: false,
         error: 'Delete URL is required' 
       });
     }
-
     console.log('Debugging ImgBB deletion URL:', deleteUrl);
-
     // Extract image ID and hash
     const urlParts = deleteUrl.split('/');
     const imageId = urlParts[urlParts.length - 2];
     const imageHash = urlParts[urlParts.length - 1];
-
     if (!imageId || !imageHash) {
       return res.status(400).json({
         success: false,
         error: 'Invalid ImgBB URL format'
       });
     }
-
     // Test the API endpoint
     const formData = new FormData();
     formData.append('pathname', `/${imageId}/${imageHash}`);
@@ -3626,7 +3571,6 @@ app.post('/api/admin/imgbb/debug', authenticateAdmin, async (req, res) => {
     formData.append('deleting[id]', imageId);
     formData.append('deleting[hash]', imageHash);
     formData.append('_', Date.now().toString());
-
     const response = await axios.post('https://ibb.co/json', formData, {
       timeout: 10000,
       headers: {
@@ -3638,7 +3582,6 @@ app.post('/api/admin/imgbb/debug', authenticateAdmin, async (req, res) => {
         'Content-Type': `multipart/form-data; boundary=${formData._boundary}`,
       }
     });
-
     res.json({
       success: true,
       status: response.status,
@@ -3646,7 +3589,6 @@ app.post('/api/admin/imgbb/debug', authenticateAdmin, async (req, res) => {
       urlAnalyzed: deleteUrl,
       extracted: { imageId, imageHash }
     });
-
   } catch (error) {
     console.error('Debug error:', error);
     
@@ -3658,7 +3600,6 @@ app.post('/api/admin/imgbb/debug', authenticateAdmin, async (req, res) => {
         headers: error.response.headers
       };
     }
-
     res.status(500).json({ 
       success: false,
       error: 'Debug failed',
@@ -3666,7 +3607,6 @@ app.post('/api/admin/imgbb/debug', authenticateAdmin, async (req, res) => {
     });
   }
 });
-
 // Get all gallery items
 app.get('/api/admin/gallery', authenticateAdmin, async (req, res) => {
   try {
@@ -3709,24 +3649,20 @@ app.get('/api/admin/gallery', authenticateAdmin, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch gallery images' });
   }
 });
-
 // Add gallery item (from URL)
 app.post('/api/admin/gallery/url', authenticateAdmin, async (req, res) => {
   try {
     const { name, description, category, featured, imageUrl } = req.body;
-
     // ✅ Check if image URL is provided
     if (!imageUrl) {
       return res.status(400).json({ success: false, error: 'Image URL is required' });
     }
-
     // ✅ Validate URL format
     try {
       new URL(imageUrl);
     } catch {
       return res.status(400).json({ success: false, error: 'Invalid image URL' });
     }
-
     // ✅ Save the image URL directly in MongoDB
     const galleryItem = new Gallery({
       name: name || 'Untitled',
@@ -3739,16 +3675,13 @@ app.post('/api/admin/gallery/url', authenticateAdmin, async (req, res) => {
       createdAt: new Date(),
       updatedAt: new Date()
     });
-
     await galleryItem.save();
-
     // ✅ Return saved gallery item info
     res.json({
       success: true,
       message: 'Image URL saved successfully',
       galleryItem
     });
-
   } catch (err) {
     console.error('Error adding gallery item from URL:', err);
     res.status(500).json({ success: false, error: 'Failed to add gallery item' });
@@ -3788,7 +3721,6 @@ app.put('/api/admin/gallery/:id', authenticateAdmin, async (req, res) => {
     res.status(500).json({ error: 'Failed to update gallery item' });
   }
 });
-
 // Toggle featured status
 app.patch('/api/admin/gallery/:id/featured', authenticateAdmin, async (req, res) => {
   try {
@@ -3816,7 +3748,6 @@ app.patch('/api/admin/gallery/:id/featured', authenticateAdmin, async (req, res)
     res.status(500).json({ error: 'Failed to update featured status' });
   }
 });
-
 // Get gallery stats
 app.get('/api/admin/gallery/stats', authenticateAdmin, async (req, res) => {
   try {
@@ -3846,12 +3777,10 @@ app.get('/api/admin/gallery/stats', authenticateAdmin, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch gallery stats' });
   }
 });
-
 // Public portfolio endpoint
 app.get('/api/portfolio', async (req, res) => {
   try {
     const images = await Gallery.find().sort({ createdAt: -1 }); // newest first
-
     // Map the images to public-friendly format
     const response = images.map(item => ({
       _id: item._id,
@@ -3862,7 +3791,6 @@ app.get('/api/portfolio', async (req, res) => {
       imageUrl: item.imageUrl,  // make sure this is a public URL
       uploadedAt: item.createdAt
     }));
-
     res.json({ success: true, images: response });
   } catch (err) {
     console.error('Error fetching portfolio images:', err);
@@ -5447,3 +5375,4 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
