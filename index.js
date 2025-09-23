@@ -45,6 +45,7 @@ console.log('SimpleWebAuthn imported:', {
   verifyAuthenticationResponse: typeof verifyAuthenticationResponse
 });
 
+
 // ADD THE FUNCTION HERE - after requires, before routes
 // Replace the uint8ArrayToBase64url function with this improved version
 function uint8ArrayToBase64url(input) {
@@ -240,6 +241,7 @@ app.use(session({
   }),
 }));
 
+
 // Add session debugging middleware
 app.use((req, res, next) => {
   console.log('Session debug:', {
@@ -247,9 +249,7 @@ app.use((req, res, next) => {
     hasChallenge: !!req.session.webauthnChallenge,
     challenge: req.session.webauthnChallenge ? 
       req.session.webauthnChallenge.substring(0, 20) + '...' : null,
-    hasEmail: !!req.session.webauthnEmail,
-    hasFirstFactor: !!req.session.firstFactorVerified,
-    adminEmail: req.session.adminEmail
+    hasEmail: !!req.session.webauthnEmail
   });
   next();
 });
@@ -300,7 +300,7 @@ const upload = multer({
 });
 
 // Email Transporter
-const transporter = nodemailer.createTransporter({
+const transporter = nodemailer.createTransport({
   host: 'smtp.hostinger.com',
   port: 465,
   secure: true,
@@ -794,9 +794,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ===== ADMIN LOGIN ENDPOINTS ===== //
-
-// Admin Login (First Factor - Email/Password)
+// Admin Login (Fixed - No external API call)
 app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -845,24 +843,6 @@ app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) =
     const clientIP = req.ip || req.connection.remoteAddress;
     failedAttempts.delete(clientIP);
 
-    // Set session variables to track first factor completion
-    req.session.adminEmail = email;
-    req.session.firstFactorVerified = true;
-    req.session.firstFactorTimestamp = Date.now();
-    
-    // Ensure session is saved
-    await new Promise((resolve, reject) => {
-      req.session.save((err) => {
-        if (err) {
-          console.error('Failed to save session after login:', err);
-          reject(err);
-        } else {
-          console.log('Login session saved successfully');
-          resolve();
-        }
-      });
-    });
-
     // Determine 2FA options
     const hasWebAuthn = admin.webauthnCredentials.length > 0;
     const otpEnabled = true; // You can make this a per-admin setting
@@ -884,89 +864,6 @@ app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) =
   }
 });
 
-// Route to verify OTP for admin login (Second Factor)
-app.post('/api/admin/verify-otp', checkIPBlacklist, async (req, res) => {
-    try {
-        const { idToken, email } = req.body;
-        
-        // Check if first factor was completed
-        if (!req.session.firstFactorVerified || !req.session.adminEmail) {
-            return res.status(400).json({ 
-                error: 'First factor (email/password) not verified. Please login again.',
-                code: 'FIRST_FACTOR_NOT_VERIFIED'
-            });
-        }
-        
-        // Verify email matches session
-        if (email !== req.session.adminEmail) {
-            return res.status(400).json({ 
-                error: 'Email mismatch with session',
-                code: 'EMAIL_MISMATCH'
-            });
-        }
-        
-        // Check if session is too old (5 minutes)
-        if (Date.now() - req.session.firstFactorTimestamp > 5 * 60 * 1000) {
-            req.session.firstFactorVerified = false;
-            req.session.adminEmail = null;
-            await req.session.save();
-            return res.status(400).json({ 
-                error: 'Session expired. Please login again.',
-                code: 'SESSION_EXPIRED'
-            });
-        }
-        
-        if (!idToken) {
-            return res.status(400).json({ error: 'ID token is required' });
-        }
-        
-        // Verify the Firebase ID token
-        const decodedToken = await admin.auth().verifyIdToken(idToken);
-        
-        // Check if the phone number is in the admin list
-        const phoneNumber = decodedToken.phone_number;
-        const adminPhones = process.env.FIREBASE_ADMIN_PHONES 
-            ? process.env.FIREBASE_ADMIN_PHONES.split(',') 
-            : [];
-        
-        if (!adminPhones.includes(phoneNumber)) {
-            return res.status(401).json({ error: 'Unauthorized phone number' });
-        }
-        
-        // Find admin by email
-        const admin = await Admin.findOne({ email });
-        if (!admin) {
-            return res.status(401).json({ error: 'Admin account not found' });
-        }
-        
-        // Generate JWT token for admin access
-        const token = jwt.sign(
-            { 
-                email: admin.email, 
-                role: 'admin',
-                uid: decodedToken.uid 
-            },
-            process.env.JWT_SECRET,
-            { expiresIn: '8h' }
-        );
-        
-        // Clear session variables
-        req.session.firstFactorVerified = false;
-        req.session.adminEmail = null;
-        req.session.firstFactorTimestamp = null;
-        await req.session.save();
-        
-        res.json({ 
-            success: true, 
-            token,
-            message: 'OTP verified successfully' 
-        });
-        
-    } catch (err) {
-        console.error('Error verifying OTP:', err);
-        res.status(401).json({ error: 'Invalid OTP' });
-    }
-});
 
 // Route to check if phone number is registered for admin
 app.post('/api/admin/check-phone', checkIPBlacklist, async (req, res) => {
@@ -1014,6 +911,63 @@ app.post('/api/admin/check-phone', checkIPBlacklist, async (req, res) => {
     console.error('Error checking phone:', err);
     res.status(500).json({ error: 'Server error' });
   }
+});
+
+// Route to verify OTP for admin login
+app.post('/api/admin/verify-otp', checkIPBlacklist, async (req, res) => {
+    try {
+        const { idToken, email } = req.body;
+        
+        if (!idToken) {
+            return res.status(400).json({ error: 'ID token is required' });
+        }
+        
+        // Verify the Firebase ID token
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        
+        // Check if the phone number is in the admin list
+        const phoneNumber = decodedToken.phone_number;
+        const adminPhones = process.env.FIREBASE_ADMIN_PHONES 
+            ? process.env.FIREBASE_ADMIN_PHONES.split(',') 
+            : [];
+        
+        if (!adminPhones.includes(phoneNumber)) {
+            return res.status(401).json({ error: 'Unauthorized phone number' });
+        }
+        
+        // Verify admin credentials (email/password) first
+        try {
+            // This simulates checking against your admin database
+            // Replace with your actual admin verification logic
+            const adminUser = await Admin.findOne({ email });
+            if (!adminUser) {
+                return res.status(401).json({ error: 'Invalid admin credentials' });
+            }
+            
+            // Generate JWT token for admin access
+            const token = jwt.sign(
+                { 
+                    email: adminUser.email, 
+                    role: 'admin',
+                    uid: decodedToken.uid 
+                },
+                process.env.JWT_SECRET,
+                { expiresIn: '8h' }
+            );
+            
+            res.json({ 
+                success: true, 
+                token,
+                message: 'OTP verified successfully' 
+            });
+        } catch (error) {
+            res.status(401).json({ error: 'Invalid admin credentials' });
+        }
+        
+    } catch (err) {
+        console.error('Error verifying OTP:', err);
+        res.status(401).json({ error: 'Invalid OTP' });
+    }
 });
 
 // Route to unblock IP (for other admins)
@@ -1265,6 +1219,7 @@ app.post('/api/admin/webauthn/generate-registration-options', authenticateAdmin,
   }
 });
 
+
 // ===== Debug Routes ===== //
 
 app.get('/api/debug/cookies', (req, res) => {
@@ -1294,6 +1249,7 @@ app.get('/api/debug/session-info', authenticateAdmin, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // Generate authentication options
 app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimit, async (req, res) => {
@@ -1330,6 +1286,7 @@ app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimi
 
     // Store the challenge and email in the session
     req.session.webauthnChallenge = uint8ArrayToBase64url(options.challenge);
+
     req.session.webauthnEmail = email;
 
     // Ensure session is saved
@@ -1360,6 +1317,7 @@ app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimi
   }
 });
 
+// Verify registration
 // Verify registration
 app.post('/api/admin/webauthn/verify-registration', authenticateAdmin, webauthnRateLimit, async (req, res) => {
   try {
@@ -1459,6 +1417,7 @@ app.get('/api/debug/session', authenticateAdmin, (req, res) => {
     timestamp: req.session.webauthnTimestamp
   });
 });
+
 
 // Verify authentication
 app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (req, res) => {
@@ -1620,6 +1579,9 @@ app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (
   }
 });
 
+
+
+
 // Get admin's WebAuthn credentials
 app.get('/api/admin/webauthn/credentials', authenticateAdmin, async (req, res) => {
   try {
@@ -1772,6 +1734,7 @@ app.post('/api/admin/webauthn/debug-base64url', authenticateAdmin, (req, res) =>
   }
 });
 
+
 // ===== WEB AUTHN LOGIN ENDPOINTS =====
 
 // Check if admin has WebAuthn credentials
@@ -1810,38 +1773,11 @@ app.post('/api/admin/webauthn/check-credentials', async (req, res) => {
   }
 });
 
-// Simple WebAuthn authentication options generation (Second Factor)
+// Simple WebAuthn authentication options generation
 app.post('/api/admin/webauthn/login/generate-options', async (req, res) => {
   try {
     const { email } = req.body;
     console.log('WebAuthn login request for email:', email);
-
-    // Check if first factor was completed
-    if (!req.session.firstFactorVerified || !req.session.adminEmail) {
-      return res.status(400).json({
-        error: 'First factor (email/password) not verified. Please login again.',
-        code: 'FIRST_FACTOR_NOT_VERIFIED'
-      });
-    }
-    
-    // Verify email matches session
-    if (email !== req.session.adminEmail) {
-      return res.status(400).json({ 
-        error: 'Email mismatch with session',
-        code: 'EMAIL_MISMATCH'
-      });
-    }
-    
-    // Check if session is too old (5 minutes)
-    if (Date.now() - req.session.firstFactorTimestamp > 5 * 60 * 1000) {
-      req.session.firstFactorVerified = false;
-      req.session.adminEmail = null;
-      await req.session.save();
-      return res.status(400).json({ 
-        error: 'Session expired. Please login again.',
-        code: 'SESSION_EXPIRED'
-      });
-    }
 
     if (!email) {
       return res.status(400).json({
@@ -1865,12 +1801,13 @@ app.post('/api/admin/webauthn/login/generate-options', async (req, res) => {
       });
     }
 
-    // Allow only internal platform authenticators (Windows Hello, Touch ID, etc.)
+    // ✅ Allow only internal platform authenticators (Windows Hello, Touch ID, etc.)
     const allowCredentials = admin.webauthnCredentials.map(cred => ({
-      id: cred.credentialID, // keep as base64url string
-      type: "public-key",
-      transports: ["internal"]
-    }));
+  id: cred.credentialID, // keep as base64url string
+  type: "public-key",
+  transports: ["internal"]
+}));
+
 
     const challenge = require('crypto').randomBytes(32).toString('base64url');
 
@@ -1887,9 +1824,9 @@ app.post('/api/admin/webauthn/login/generate-options', async (req, res) => {
       allowCredentials,
       rpId: rpID,
       timeout: 60000,
-      userVerification: 'required', // force biometric/Pin instead of "preferred"
+      userVerification: 'required', // ✅ force biometric/Pin instead of "preferred"
       authenticatorSelection: {
-        authenticatorAttachment: 'platform' // ensure only inbuilt device auth
+        authenticatorAttachment: 'platform' // ✅ ensure only inbuilt device auth
       }
     });
 
@@ -1902,7 +1839,8 @@ app.post('/api/admin/webauthn/login/generate-options', async (req, res) => {
   }
 });
 
-// Simple WebAuthn authentication verification (Second Factor)
+
+// Simple WebAuthn authentication verification
 app.post('/api/admin/webauthn/login/verify', async (req, res) => {
   try {
     const { credential, email } = req.body;
@@ -1915,36 +1853,6 @@ app.post('/api/admin/webauthn/login/verify', async (req, res) => {
         success: false,
         error: 'Invalid credential data',
         code: 'INVALID_CREDENTIAL'
-      });
-    }
-
-    // Check if first factor was completed
-    if (!req.session.firstFactorVerified || !req.session.adminEmail) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'First factor (email/password) not verified. Please login again.',
-        code: 'FIRST_FACTOR_NOT_VERIFIED'
-      });
-    }
-    
-    // Verify email matches session
-    if (email !== req.session.adminEmail) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Email mismatch with session',
-        code: 'EMAIL_MISMATCH'
-      });
-    }
-    
-    // Check if session is too old (5 minutes)
-    if (Date.now() - req.session.firstFactorTimestamp > 5 * 60 * 1000) {
-      req.session.firstFactorVerified = false;
-      req.session.adminEmail = null;
-      await req.session.save();
-      return res.status(400).json({ 
-        success: false,
-        error: 'Session expired. Please login again.',
-        code: 'SESSION_EXPIRED'
       });
     }
 
@@ -2003,9 +1911,6 @@ app.post('/api/admin/webauthn/login/verify', async (req, res) => {
     // Clear session
     req.session.webauthnChallenge = null;
     req.session.webauthnEmail = null;
-    req.session.firstFactorVerified = false;
-    req.session.adminEmail = null;
-    req.session.firstFactorTimestamp = null;
     await req.session.save();
 
     // Generate JWT token
@@ -2062,6 +1967,7 @@ app.get('/api/admin/webauthn/debug/:email', async (req, res) => {
   }
 });
 
+
 // ===== COUPON ROUTES ===== //
 
 app.post('/api/admin/coupons', authenticateAdmin, async (req, res) => {
@@ -2079,7 +1985,7 @@ app.get('/api/admin/coupons', authenticateAdmin, async (req, res) => {
     const coupons = await Coupon.find().sort({ createdAt: -1 });
     res.json({ success: true, coupons });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch coupons' });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -2097,7 +2003,7 @@ app.delete('/api/admin/coupons/:id', authenticateAdmin, async (req, res) => {
     await Coupon.findByIdAndDelete(req.params.id);
     res.json({ success: true, message: 'Coupon deleted successfully' });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to delete coupon' });
+    res.status(500).json({ error: err.message });
   }
 });
 
