@@ -1854,13 +1854,13 @@ app.post('/api/admin/webauthn/generate-auth-options-login', async (req, res) => 
     console.log('Login auth session saved with challenge');
 
     res.json({
-      ...options,
-      challenge: bufferToBase64url(Buffer.from(options.challenge, 'base64')),
-      allowCredentials: options.allowCredentials.map(cred => ({
-        ...cred,
-        id: bufferToBase64url(cred.id)
-      }))
-    });
+  ...options,
+  challenge: bufferToBase64url(Buffer.from(options.challenge)),
+  allowCredentials: options.allowCredentials ? options.allowCredentials.map(cred => ({
+    ...cred,
+    id: typeof cred.id === 'string' ? cred.id : bufferToBase64url(cred.id)
+  })) : []
+});
 
   } catch (err) {
     console.error('Error generating login auth options:', err);
@@ -5367,6 +5367,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
