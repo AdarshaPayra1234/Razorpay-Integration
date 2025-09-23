@@ -85,7 +85,15 @@ function uint8ArrayToBase64url(input) {
       .replace(/=/g, '');
   }
   
-  throw new Error('Expected Uint8Array, Buffer, or string, got ' + typeof input);
+  // Handle string input (assume it's already base64url)
+  if (typeof input === 'string') {
+    if (!isValidBase64url(input)) {
+      throw new Error('String input is not valid base64url');
+    }
+    return input;
+  }
+  
+  throw new Error('Expected Uint8Array, Buffer, Array, or string, got ' + typeof input);
 }
 
 // Add this function to convert base64url to buffer
@@ -246,7 +254,9 @@ app.use((req, res, next) => {
     hasChallenge: !!req.session.webauthnChallenge,
     challenge: req.session.webauthnChallenge ? 
       req.session.webauthnChallenge.substring(0, 20) + '...' : null,
-    hasEmail: !!req.session.webauthnEmail
+    hasEmail: !!req.session.webauthnEmail,
+    hasFirstFactor: !!req.session.firstFactorAuthenticated,
+    adminEmail: req.session.adminEmail
   });
   next();
 });
@@ -791,7 +801,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Admin Login (Fixed - No external API call)
+// Admin Login (Modified to require second factor)
 app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -857,17 +867,33 @@ app.post('/api/admin/login', authRateLimit, checkIPBlacklist, async (req, res) =
     // Check if admin has WebAuthn credentials
     const hasWebAuthn = admin.webauthnCredentials.length > 0;
     
-    // Generate JWT token
-    const token = jwt.sign(
-      { email: admin.email, role: 'admin' },
-      process.env.JWT_SECRET,
-      { expiresIn: '8h' }
-    );
-    
+    // Check for OTP availability (admin phones in environment)
+    const adminPhones = process.env.FIREBASE_ADMIN_PHONES 
+      ? process.env.FIREBASE_ADMIN_PHONES.split(',') 
+      : [];
+    const hasOTP = adminPhones.length > 0;
+
+    // If neither factor is available, we cannot proceed
+    if (!hasWebAuthn && !hasOTP) {
+      return res.status(400).json({ 
+        error: 'No second factor available. Please contact administrator.',
+        details: 'This admin account does not have WebAuthn credentials and no OTP phones are configured.'
+      });
+    }
+
+    // Set session variables for first factor
+    req.session.adminEmail = email;
+    req.session.firstFactorAuthenticated = true;
+    await req.session.save();
+
+    // Return the available factors - do not issue JWT yet
     res.json({ 
-      success: true, 
-      token,
-      hasWebAuthn
+      success: true,
+      message: "First factor authenticated. Please complete second factor.",
+      factors: {
+        webauthn: hasWebAuthn,
+        otp: hasOTP
+      }
     });
   } catch (err) {
     console.error('Admin login error:', err);
@@ -926,7 +952,7 @@ app.post('/api/admin/check-phone', checkIPBlacklist, async (req, res) => {
   }
 });
 
-// Route to verify OTP for admin login
+// Route to verify OTP for admin login (Modified to use session)
 app.post('/api/admin/verify-otp', checkIPBlacklist, async (req, res) => {
     try {
         const { idToken, email } = req.body;
@@ -948,34 +974,43 @@ app.post('/api/admin/verify-otp', checkIPBlacklist, async (req, res) => {
             return res.status(401).json({ error: 'Unauthorized phone number' });
         }
         
-        // Verify admin credentials (email/password) first
-        try {
-            // This simulates checking against your admin database
-            // Replace with your actual admin verification logic
-            const adminUser = await Admin.findOne({ email });
-            if (!adminUser) {
-                return res.status(401).json({ error: 'Invalid admin credentials' });
-            }
-            
-            // Generate JWT token for admin access
-            const token = jwt.sign(
-                { 
-                    email: adminUser.email, 
-                    role: 'admin',
-                    uid: decodedToken.uid 
-                },
-                process.env.JWT_SECRET,
-                { expiresIn: '8h' }
-            );
-            
-            res.json({ 
-                success: true, 
-                token,
-                message: 'OTP verified successfully' 
-            });
-        } catch (error) {
-            res.status(401).json({ error: 'Invalid admin credentials' });
+        // Check session for first factor
+        if (!req.session.firstFactorAuthenticated || !req.session.adminEmail) {
+          return res.status(401).json({ error: 'First factor authentication required' });
         }
+
+        // Check that the email in the session matches the provided email
+        if (req.session.adminEmail !== email) {
+          return res.status(401).json({ error: 'Email mismatch' });
+        }
+        
+        // Find the admin by email (we don't check password again)
+        const admin = await Admin.findOne({ email });
+        if (!admin) {
+            return res.status(401).json({ error: 'Admin not found' });
+        }
+        
+        // Generate JWT token for admin access
+        const token = jwt.sign(
+            { 
+                email: admin.email, 
+                role: 'admin',
+                uid: decodedToken.uid 
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: '8h' }
+        );
+        
+        // Clear session variables for first factor
+        req.session.firstFactorAuthenticated = false;
+        req.session.adminEmail = null;
+        await req.session.save();
+        
+        res.json({ 
+            success: true, 
+            token,
+            message: 'OTP verified successfully' 
+        });
         
     } catch (err) {
         console.error('Error verifying OTP:', err);
@@ -1264,10 +1299,18 @@ app.get('/api/debug/session-info', authenticateAdmin, async (req, res) => {
 });
 
 
-// Generate authentication options
+// Generate authentication options (Modified to use session)
 app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimit, async (req, res) => {
   try {
-    const { email } = req.body;
+    // Check session for first factor
+    if (!req.session.firstFactorAuthenticated || !req.session.adminEmail) {
+      return res.status(401).json({ 
+        error: 'First factor authentication required',
+        code: 'FIRST_FACTOR_REQUIRED'
+      });
+    }
+
+    const email = req.session.adminEmail;
     
     if (!email) {
       return res.status(400).json({ 
@@ -1275,6 +1318,8 @@ app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimi
         code: 'EMAIL_REQUIRED'
       });
     }
+
+    console.log('Generating auth options for login - Email:', email);
 
     const admin = await Admin.findOne({ email });
     if (!admin) {
@@ -1284,47 +1329,51 @@ app.post('/api/admin/webauthn/generate-authentication-options', webauthnRateLimi
       });
     }
 
-    // Properly format allowCredentials
+    // Check if admin has credentials
+    if (admin.webauthnCredentials.length === 0) {
+      return res.status(400).json({ 
+        error: 'No WebAuthn credentials found for this admin',
+        code: 'NO_CREDENTIALS'
+      });
+    }
+
+    // ✅ FIX: Use the credential IDs as they are (already base64url strings)
     const allowCredentials = admin.webauthnCredentials.map(cred => ({
-      id: Buffer.from(cred.credentialID, 'base64'),
-      type: 'public-key'
+      id: cred.credentialID, // Already stored as base64url string
+      type: 'public-key',
+      transports: ['internal'] // Focus on internal/built-in authenticators
     }));
 
-    // Generate authentication options
+    // ✅ FIX: Change userVerification to 'required' for built-in auth
     const options = await generateAuthenticationOptions({
       rpID,
       allowCredentials,
-      userVerification: 'required'
+      userVerification: 'required', // Changed from 'preferred' to 'required'
+      timeout: 60000
     });
 
-    // Store the challenge and email in the session
-    req.session.webauthnChallenge = uint8ArrayToBase64url(options.challenge);
-
+    // Store challenge in session with email
+    req.session.webauthnChallenge = options.challenge;
     req.session.webauthnEmail = email;
+    req.session.webauthnTimestamp = Date.now();
+    req.session.webauthnPurpose = 'login';
 
-    // Ensure session is saved
-    await new Promise((resolve, reject) => {
-      req.session.save((err) => {
-        if (err) {
-          console.error('Failed to save session:', err);
-          reject(err);
-        } else {
-          console.log('Auth session saved successfully');
-          resolve();
-        }
-      });
-    });
+    await req.session.save();
 
-    // Convert challenge to base64url for client
+    console.log('Login auth session saved with challenge');
+
+    // ✅ FIX: Proper response formatting
     res.json({
       ...options,
-      challenge: uint8ArrayToBase64url(options.challenge)
+      challenge: bufferToBase64url(Buffer.from(options.challenge)),
+      allowCredentials: allowCredentials // Use the pre-formatted credentials
     });
+
   } catch (err) {
-    console.error('Error generating authentication options:', err);
+    console.error('Error generating login auth options:', err);
     res.status(500).json({ 
       error: 'Failed to generate authentication options',
-      code: 'AUTH_OPTIONS_FAILED',
+      code: 'GENERATION_FAILED',
       details: err.message 
     });
   }
@@ -1432,74 +1481,43 @@ app.get('/api/debug/session', authenticateAdmin, (req, res) => {
 });
 
 
-// Verify authentication
+// Verify authentication (Modified to use session and issue token)
 app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (req, res) => {
   try {
     const { credential } = req.body;
     
     console.log('=== WEB AUTHN AUTHENTICATION VERIFICATION STARTED ===');
 
-    // ===== INPUT VALIDATION ===== //
-    if (!credential || !credential.id || !credential.response) {
-  return res.status(400).json({ 
-    success: false,
-    error: 'Invalid credential data structure',
-    code: 'INVALID_CREDENTIAL_STRUCTURE'
-  });
-}
-
-
-    // Validate base64url encoding for all required fields
-    const requiredAuthFields = [
-      { field: credential.id, name: 'credential.id' },
-      { field: credential.rawId, name: 'credential.rawId' },
-      { field: credential.response.clientDataJSON, name: 'credential.response.clientDataJSON' },
-      { field: credential.response.authenticatorData, name: 'credential.response.authenticatorData' },
-      { field: credential.response.signature, name: 'credential.response.signature' }
-    ];
-
-    for (const { field, name } of requiredAuthFields) {
-      if (!field) {
-        return res.status(400).json({ 
-          success: false,
-          error: `Missing required field: ${name}`,
-          code: 'MISSING_REQUIRED_FIELD'
-        });
-      }
-      
-      if (!isValidBase64url(field)) {
-        return res.status(400).json({ 
-          success: false,
-          error: `Invalid base64url encoding for ${name}`,
-          code: 'INVALID_BASE64URL_ENCODING',
-          field: name
-        });
-      }
+    // Check session for first factor
+    if (!req.session.firstFactorAuthenticated || !req.session.adminEmail) {
+      return res.status(401).json({ 
+        success: false,
+        error: 'First factor authentication required',
+        code: 'FIRST_FACTOR_REQUIRED'
+      });
     }
 
-    // ===== SESSION VALIDATION ===== //
+    // Session validation
     const expectedChallenge = req.session.webauthnChallenge;
     const adminEmail = req.session.webauthnEmail;
+    const purpose = req.session.webauthnPurpose;
 
-    if (!expectedChallenge || !adminEmail) {
+    console.log('Session debug for login:', {
+      hasChallenge: !!expectedChallenge,
+      hasEmail: !!adminEmail,
+      purpose: purpose,
+      challengeLength: expectedChallenge ? expectedChallenge.length : 0
+    });
+
+    if (!expectedChallenge || !adminEmail || purpose !== 'login') {
       return res.status(400).json({ 
         success: false,
-        error: 'Authentication session expired',
+        error: 'Authentication session expired or invalid',
         code: 'SESSION_EXPIRED'
       });
     }
 
-    // Check if challenge is too old
-    const challengeTimestamp = req.session.webauthnTimestamp;
-    if (!challengeTimestamp || (Date.now() - challengeTimestamp > 2 * 60 * 1000)) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Challenge expired',
-        code: 'CHALLENGE_EXPIRED'
-      });
-    }
-
-    // ===== ADMIN VALIDATION ===== //
+    // Find admin
     const admin = await Admin.findOne({ email: adminEmail });
     if (!admin) {
       return res.status(404).json({ 
@@ -1509,85 +1527,76 @@ app.post('/api/admin/webauthn/verify-authentication', webauthnRateLimit, async (
       });
     }
 
-    // Find the stored credential
-    const storedCredential = admin.webauthnCredentials.find(
-      cred => cred.credentialID === credential.id
-    );
-
-    if (!storedCredential) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'Credential not found',
-        code: 'CREDENTIAL_NOT_FOUND'
-      });
-    }
-
-    // ===== DATA CONVERSION ===== //
-    const authenticator = {
-      credentialID: base64urlToBuffer(storedCredential.credentialID),
-      credentialPublicKey: base64urlToBuffer(storedCredential.credentialPublicKey),
-      counter: storedCredential.counter
-    };
-
-    const response = {
-      id: credential.id,
-      rawId: base64urlToBuffer(credential.rawId),
-      response: {
-        clientDataJSON: base64urlToBuffer(credential.response.clientDataJSON),
-        authenticatorData: base64urlToBuffer(credential.response.authenticatorData),
-        signature: base64urlToBuffer(credential.response.signature),
-        userHandle: credential.response.userHandle ? base64urlToBuffer(credential.response.userHandle) : undefined
-      },
-      type: credential.type
-    };
-
-    // ===== VERIFICATION ===== //
+    // Verify authentication using the same verification function
     const verification = await verifyAuthenticationResponse({
-      response,
-      expectedChallenge: base64urlToBuffer(expectedChallenge),
+      credential: {
+        id: credential.id,
+        rawId: base64urlToBuffer(credential.rawId),
+        response: {
+          clientDataJSON: base64urlToBuffer(credential.response.clientDataJSON),
+          authenticatorData: base64urlToBuffer(credential.response.authenticatorData),
+          signature: base64urlToBuffer(credential.response.signature),
+          userHandle: credential.response.userHandle ? base64urlToBuffer(credential.response.userHandle) : undefined
+        },
+        type: credential.type,
+        clientExtensionResults: credential.clientExtensionResults || {}
+      },
+      expectedChallenge: expectedChallenge,
       expectedOrigin: origin,
-      expectedRPID: rpID,
-      authenticator
+      expectedRPID: rpID
     });
 
     if (!verification.verified) {
       return res.status(400).json({ 
         success: false,
         error: 'Authentication verification failed',
-        code: 'VERIFICATION_FAILED',
-        details: verification.verificationError?.message
+        code: 'VERIFICATION_FAILED'
       });
     }
 
-    // Update counter
-    storedCredential.counter = verification.authenticationInfo.newCounter;
-    await admin.save();
+    // Update credential counter
+    const storedCredential = admin.webauthnCredentials.find(
+      cred => cred.credentialID === credential.id
+    );
+    
+    if (storedCredential && verification.authenticationInfo) {
+      storedCredential.counter = verification.authenticationInfo.newCounter;
+      await admin.save();
+    }
 
-    // Clear session
-    req.session.webauthnChallenge = null;
-    req.session.webauthnEmail = null;
-    await req.session.save();
-
-    // Generate JWT token
+    // Generate JWT token for admin access
     const token = jwt.sign(
       { email: admin.email, role: 'admin' },
       process.env.JWT_SECRET,
       { expiresIn: '8h' }
     );
 
+    // Clear session variables for first factor and WebAuthn
+    req.session.firstFactorAuthenticated = false;
+    req.session.adminEmail = null;
+    req.session.webauthnChallenge = null;
+    req.session.webauthnEmail = null;
+    req.session.webauthnPurpose = null;
+    await req.session.save();
+
+    console.log('WebAuthn login successful for:', admin.email);
+
     res.json({ 
       success: true,
       message: 'Authentication successful',
-      token
+      token,
+      admin: {
+        email: admin.email
+      }
     });
 
   } catch (err) {
-    console.error('Error verifying authentication:', err);
+    console.error('Error verifying login authentication:', err);
     res.status(500).json({ 
       success: false,
       error: 'Failed to verify authentication',
       code: 'VERIFICATION_ERROR',
-      details: err.message
+      details: err.message 
     });
   }
 });
@@ -5350,33 +5359,3 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
