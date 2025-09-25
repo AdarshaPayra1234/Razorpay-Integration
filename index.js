@@ -525,7 +525,6 @@ const emailTemplateSchema = new mongoose.Schema({
 // Create Models
 const Booking = mongoose.model('Booking', bookingSchema);
 const Message = mongoose.model('Message', messageSchema);
-const Admin = mongoose.model('Admin', adminSchema);
 const Gallery = mongoose.model('Gallery', gallerySchema);
 const Settings = mongoose.model('Settings', settingsSchema);
 const GmailSync = mongoose.model('GmailSync', gmailSyncSchema);
@@ -6555,6 +6554,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
