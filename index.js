@@ -423,20 +423,6 @@ const messageSchema = new mongoose.Schema({
   messageId: String
 });
 
-// Admin Schema
-const adminSchema = new mongoose.Schema({
-  email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  webauthnCredentials: [{
-    credentialID: { type: String, required: true },
-    credentialPublicKey: { type: String, required: true },
-    counter: { type: Number, default: 0 },
-    deviceType: { type: String, default: 'unknown' },
-    deviceName: { type: String, default: 'Unnamed Device' },
-    addedAt: { type: Date, default: Date.now }
-  }]
-});
-
 const gallerySchema = new mongoose.Schema({
   name: String,
   description: String,
@@ -6569,6 +6555,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
