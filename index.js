@@ -3098,8 +3098,8 @@ app.get('/api/wake-up', (req, res) => {
 // ===== BOOKING ROUTES ===== //
 
 app.get('/api/admin/bookings', 
-  authenticateAdmin, 
-  checkPermission('bookings', 'read'),
+  authenticateAdmin,  // Same middleware as user backend
+  checkPermission('bookings'), // Checks booking_management permissions
   auditLog('read', 'bookings'),
   async (req, res) => {
   try {
@@ -6554,6 +6554,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
