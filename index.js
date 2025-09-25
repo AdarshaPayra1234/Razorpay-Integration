@@ -547,6 +547,89 @@ const Coupon = mongoose.model('Coupon', couponSchema);
 const CouponBanner = mongoose.model('CouponBanner', bannerSchema);
 const EmailTemplate = mongoose.model('EmailTemplate', emailTemplateSchema);
 
+
+// ==================== RBAC SCHEMAS ====================
+
+// Role Schema
+const roleSchema = new mongoose.Schema({
+  name: { 
+    type: String, 
+    required: true, 
+    unique: true,
+    enum: ['super_admin', 'admin', 'editor', 'booking_manager', 'viewer'] 
+  },
+  permissions: [{
+    resource: { 
+      type: String, 
+      required: true,
+      enum: ['bookings', 'users', 'gallery', 'messages', 'settings', 'coupons', 'analytics', 'system']
+    },
+    actions: [{
+      type: String,
+      enum: ['create', 'read', 'update', 'delete', 'manage']
+    }]
+  }],
+  description: String,
+  isDefault: { type: Boolean, default: false },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+  createdAt: { type: Date, default: Date.now }
+});
+
+// Admin Schema with RBAC (Replace your existing adminSchema)
+const adminSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  role: { type: String, required: true, default: 'viewer' },
+  isActive: { type: Boolean, default: true },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+  lastLogin: Date,
+  loginAttempts: { type: Number, default: 0 },
+  lockUntil: Date,
+  webauthnCredentials: [{
+    credentialID: { type: String, required: true },
+    credentialPublicKey: { type: String, required: true },
+    counter: { type: Number, default: 0 },
+    deviceType: { type: String, default: 'unknown' },
+    deviceName: { type: String, default: 'Unnamed Device' },
+    addedAt: { type: Date, default: Date.now }
+  }]
+}, {
+  timestamps: true
+});
+
+// Audit Log Schema
+const auditLogSchema = new mongoose.Schema({
+  action: { type: String, required: true },
+  resource: { type: String, required: true },
+  resourceId: String,
+  description: String,
+  adminId: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', required: true },
+  adminEmail: String,
+  ipAddress: String,
+  userAgent: String,
+  oldData: mongoose.Schema.Types.Mixed,
+  newData: mongoose.Schema.Types.Mixed,
+  timestamp: { type: Date, default: Date.now }
+});
+
+// System Analytics Schema
+const analyticsSchema = new mongoose.Schema({
+  date: { type: Date, required: true, unique: true },
+  logins: { type: Number, default: 0 },
+  failedLogins: { type: Number, default: 0 },
+  bookingsCreated: { type: Number, default: 0 },
+  bookingsModified: { type: Number, default: 0 },
+  imagesUploaded: { type: Number, default: 0 },
+  messagesSent: { type: Number, default: 0 },
+  adminActivities: { type: Number, default: 0 },
+  uniqueVisitors: { type: Number, default: 0 }
+});
+
+const Role = mongoose.model('Role', roleSchema);
+const Admin = mongoose.model('Admin', adminSchema); // This replaces your existing Admin model
+const AuditLog = mongoose.model('AuditLog', auditLogSchema);
+const Analytics = mongoose.model('Analytics', analyticsSchema);
+
 // ==================== MIDDLEWARE ====================
 
 // FIX: Updated Rate Limiting with proper proxy support
@@ -603,159 +686,314 @@ const checkIPBlacklist = (req, res, next) => {
   next();
 };
 
+
+// ==================== ROLE PERMISSIONS CONFIGURATION ====================
+
+const rolePermissions = {
+  super_admin: {
+    permissions: [
+      { resource: 'bookings', actions: ['create', 'read', 'update', 'delete', 'manage'] },
+      { resource: 'users', actions: ['create', 'read', 'update', 'delete', 'manage'] },
+      { resource: 'gallery', actions: ['create', 'read', 'update', 'delete', 'manage'] },
+      { resource: 'messages', actions: ['create', 'read', 'update', 'delete', 'manage'] },
+      { resource: 'settings', actions: ['create', 'read', 'update', 'delete', 'manage'] },
+      { resource: 'coupons', actions: ['create', 'read', 'update', 'delete', 'manage'] },
+      { resource: 'analytics', actions: ['create', 'read', 'update', 'delete', 'manage'] },
+      { resource: 'system', actions: ['create', 'read', 'update', 'delete', 'manage'] }
+    ],
+    description: 'Full system access with unlimited privileges'
+  },
+  admin: {
+    permissions: [
+      { resource: 'bookings', actions: ['create', 'read', 'update', 'delete', 'manage'] },
+      { resource: 'users', actions: ['read', 'update'] },
+      { resource: 'gallery', actions: ['create', 'read', 'update', 'delete'] },
+      { resource: 'messages', actions: ['create', 'read', 'update', 'delete'] },
+      { resource: 'settings', actions: ['read', 'update'] },
+      { resource: 'coupons', actions: ['create', 'read', 'update', 'delete'] },
+      { resource: 'analytics', actions: ['read'] }
+    ],
+    description: 'Administrative access with most privileges'
+  },
+  editor: {
+    permissions: [
+      { resource: 'bookings', actions: ['read', 'update'] },
+      { resource: 'gallery', actions: ['create', 'read', 'update', 'delete'] },
+      { resource: 'messages', actions: ['create', 'read', 'update'] },
+      { resource: 'coupons', actions: ['read'] }
+    ],
+    description: 'Content editing privileges'
+  },
+  booking_manager: {
+    permissions: [
+      { resource: 'bookings', actions: ['create', 'read', 'update', 'manage'] },
+      { resource: 'users', actions: ['read'] },
+      { resource: 'messages', actions: ['read', 'update'] }
+    ],
+    description: 'Booking management privileges'
+  },
+  viewer: {
+    permissions: [
+      { resource: 'bookings', actions: ['read'] },
+      { resource: 'gallery', actions: ['read'] },
+      { resource: 'analytics', actions: ['read'] }
+    ],
+    description: 'Read-only access for viewing data'
+  }
+};
+
+// Special role for booking data without personal details
+const limitedViewerPermissions = {
+  permissions: [
+    { 
+      resource: 'bookings', 
+      actions: ['read'],
+      // Special filter to exclude personal details
+      filters: { excludeFields: ['customerName', 'customerPhone', 'customerEmail', 'address'] }
+    }
+  ],
+  description: 'View booking statistics without personal data'
+};
+
 // Admin Authentication Middleware
 // ==================== MIDDLEWARE ====================
 
 // Admin Authentication Middleware - UPDATED VERSION
+// ==================== ENHANCED RBAC MIDDLEWARE ====================
+
+// RBAC Permission Check Middleware
+const checkPermission = (resource, action) => {
+  return async (req, res, next) => {
+    try {
+      if (!req.admin) {
+        return res.status(401).json({ 
+          error: 'Authentication required',
+          code: 'AUTH_REQUIRED'
+        });
+      }
+
+      const adminRole = req.admin.role;
+      
+      // Super admin has all permissions
+      if (adminRole === 'super_admin') {
+        return next();
+      }
+
+      // Check if role exists in permissions configuration
+      if (!rolePermissions[adminRole]) {
+        return res.status(403).json({ 
+          error: 'Role configuration not found',
+          code: 'ROLE_NOT_FOUND'
+        });
+      }
+
+      // Find permission for the requested resource
+      const resourcePermission = rolePermissions[adminRole].permissions.find(
+        perm => perm.resource === resource
+      );
+
+      if (!resourcePermission || !resourcePermission.actions.includes(action)) {
+        return res.status(403).json({ 
+          error: `Insufficient permissions. Required: ${action} on ${resource}`,
+          code: 'INSUFFICIENT_PERMISSIONS',
+          required: `${action}:${resource}`,
+          currentRole: adminRole
+        });
+      }
+
+      // Special handling for limited data access
+      if (resourcePermission.filters) {
+        req.permissionFilters = resourcePermission.filters;
+      }
+
+      next();
+    } catch (err) {
+      console.error('Permission check error:', err);
+      res.status(500).json({ 
+        error: 'Permission verification failed',
+        code: 'PERMISSION_CHECK_FAILED'
+      });
+    }
+  };
+};
+
+// Enhanced Admin Authentication with RBAC
 const authenticateAdmin = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
     
-    // Check if authorization header exists
-    if (!authHeader) {
-      console.log('No authorization header found');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ 
-        error: 'Authorization header missing',
-        code: 'NO_AUTH_HEADER'
-      });
-    }
-
-    // Check if it's a Bearer token
-    if (!authHeader.startsWith('Bearer ')) {
-      console.log('Invalid authorization format:', authHeader.substring(0, 20));
-      return res.status(401).json({ 
-        error: 'Invalid authorization format. Use Bearer <token>',
-        code: 'INVALID_AUTH_FORMAT'
+        error: 'Authorization header missing or invalid',
+        code: 'INVALID_AUTH_HEADER'
       });
     }
 
     const token = authHeader.split(' ')[1];
     
-    // Check if token exists
     if (!token || token === 'undefined' || token === 'null') {
-      console.log('Token missing or invalid:', token);
       return res.status(401).json({ 
         error: 'Token missing or invalid',
         code: 'TOKEN_MISSING'
       });
     }
 
-    try {
-      // Debug: Log token details (first 20 chars only for security)
-      console.log('Token received:', token.substring(0, 20) + '...');
-      console.log('Token length:', token.length);
-      
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      
-      // Additional validation for required fields
-      if (!decoded.email || !decoded.role) {
-        console.log('Token missing required fields:', decoded);
-        return res.status(401).json({ 
-          error: 'Token payload incomplete',
-          code: 'INVALID_TOKEN_PAYLOAD'
-        });
-      }
-      
-      // Check if it's an admin
-      if (decoded.role !== 'admin') {
-        console.log('Non-admin role attempt:', decoded.role);
-        return res.status(403).json({ 
-          error: 'Access denied. Admin role required.',
-          code: 'ACCESS_DENIED'
-        });
-      }
-      
-      // Find the full admin document with credentials
-      const admin = await Admin.findOne({ email: decoded.email });
-      if (!admin) {
-        console.log('Admin not found for email:', decoded.email);
-        return res.status(401).json({ 
-          error: 'Admin account not found',
-          code: 'ADMIN_NOT_FOUND'
-        });
-      }
-      
-      req.admin = admin;
-      console.log('Admin authenticated successfully:', decoded.email);
-      return next();
-      
-    } catch (tokenError) {
-      console.error('Token verification error:', {
-        name: tokenError.name,
-        message: tokenError.message,
-        expiredAt: tokenError.expiredAt
-      });
-      
-      if (tokenError.name === 'TokenExpiredError') {
-        return res.status(401).json({ 
-          error: 'Token expired',
-          code: 'TOKEN_EXPIRED'
-        });
-      }
-      
-      if (tokenError.name === 'JsonWebTokenError') {
-        // More specific error messages for JWT issues
-        let errorDetails = 'Invalid token';
-        if (tokenError.message.includes('jwt malformed')) {
-          errorDetails = 'Token structure is malformed or corrupted';
-        } else if (tokenError.message.includes('invalid signature')) {
-          errorDetails = 'Token signature verification failed';
-        } else if (tokenError.message.includes('jwt must be provided')) {
-          errorDetails = 'No token provided';
-        }
-        
-        return res.status(401).json({ 
-          error: errorDetails,
-          code: 'INVALID_TOKEN',
-          details: tokenError.message
-        });
-      }
-      
-      // For other unexpected errors
-      console.error('Unexpected token error:', tokenError);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    if (!decoded.email || !decoded.role) {
       return res.status(401).json({ 
-        error: 'Authentication failed',
-        code: 'AUTH_FAILED',
-        details: tokenError.message
+        error: 'Token payload incomplete',
+        code: 'INVALID_TOKEN_PAYLOAD'
       });
     }
+
+    const admin = await Admin.findOne({ email: decoded.email });
+    if (!admin) {
+      return res.status(401).json({ 
+        error: 'Admin account not found',
+        code: 'ADMIN_NOT_FOUND'
+      });
+    }
+
+    if (!admin.isActive) {
+      return res.status(403).json({ 
+        error: 'Admin account is deactivated',
+        code: 'ACCOUNT_DEACTIVATED'
+      });
+    }
+
+    req.admin = admin;
+    next();
+    
   } catch (err) {
-    console.error('Admin authentication middleware error:', err);
-    return res.status(500).json({ 
-      error: 'Internal server error during authentication',
-      code: 'SERVER_ERROR',
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    console.error('Admin authentication error:', err);
+    
+    if (err.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Token expired', code: 'TOKEN_EXPIRED' });
+    }
+    if (err.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Invalid token', code: 'INVALID_TOKEN' });
+    }
+    
+    res.status(500).json({ 
+      error: 'Authentication failed', 
+      code: 'AUTH_FAILED' 
     });
   }
 };
 
+// Audit Logging Middleware
+const auditLog = (action, resource, getResourceId = null) => {
+  return async (req, res, next) => {
+    const originalSend = res.send;
+    const startTime = Date.now();
+    
+    res.send = function(data) {
+      const duration = Date.now() - startTime;
+      
+      // Log the action asynchronously (don't block response)
+      if (req.admin) {
+        const resourceId = getResourceId ? getResourceId(req, JSON.parse(data)) : req.params.id;
+        
+        const auditRecord = new AuditLog({
+          action,
+          resource,
+          resourceId,
+          description: `${action} operation on ${resource}`,
+          adminId: req.admin._id,
+          adminEmail: req.admin.email,
+          ipAddress: req.ip,
+          userAgent: req.get('User-Agent'),
+          oldData: req.oldData, // Set this in update operations
+          newData: req.body,
+          timestamp: new Date()
+        });
+        
+        auditRecord.save().catch(err => 
+          console.error('Audit log save error:', err)
+        );
+
+        // Update analytics
+        updateAnalytics(action, resource, req.admin._id).catch(err =>
+          console.error('Analytics update error:', err)
+        );
+      }
+      
+      originalSend.call(this, data);
+    };
+    
+    next();
+  };
+};
+
+// Analytics update function
+async function updateAnalytics(action, resource, adminId) {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    await Analytics.findOneAndUpdate(
+      { date: today },
+      { 
+        $inc: { 
+          adminActivities: 1,
+          ...(action === 'login' && { logins: 1 }),
+          ...(action === 'login_failed' && { failedLogins: 1 }),
+          ...(resource === 'bookings' && action === 'create' && { bookingsCreated: 1 }),
+          ...(resource === 'bookings' && action === 'update' && { bookingsModified: 1 }),
+          ...(resource === 'gallery' && action === 'create' && { imagesUploaded: 1 }),
+          ...(resource === 'messages' && action === 'create' && { messagesSent: 1 })
+        }
+      },
+      { upsert: true, new: true }
+    );
+  } catch (err) {
+    console.error('Analytics update error:', err);
+  }
+}
+
 // Initialize Admin Account
+// ==================== ENHANCED ADMIN INITIALIZATION ====================
+
 async function initializeAdmin() {
   try {
-    console.log('Starting admin initialization...');
+    console.log('Starting RBAC admin initialization...');
     
     const adminEmail = 'jokercreationbuisness@gmail.com';
+    
+    // Initialize roles
+    await initializeRoles();
+    
     let admin = await Admin.findOne({ email: adminEmail });
     
     if (!admin) {
-      console.log('Admin account not found, creating new one...');
+      console.log('Super admin account not found, creating new one...');
       const adminPassword = '9002405641';
       const hashedPassword = await bcrypt.hash(adminPassword, 10);
       
       admin = new Admin({
         email: adminEmail,
-        password: hashedPassword
+        password: hashedPassword,
+        role: 'super_admin',
+        isActive: true,
+        createdBy: null // Self-created
       });
       
       await admin.save();
-      console.log('Admin account created successfully');
+      console.log('Super admin account created successfully with full privileges');
+    } else {
+      // Ensure existing admin has super_admin role
+      if (admin.role !== 'super_admin') {
+        admin.role = 'super_admin';
+        await admin.save();
+        console.log('Existing admin upgraded to super_admin role');
+      }
     }
 
+    // Initialize settings (your existing code)
     let settings = await Settings.findOne();
-    
     if (!settings) {
       console.log('No settings found, creating default configuration...');
-      
       settings = new Settings({
         imapHost: 'imap.hostinger.com',
         imapPort: 993,
@@ -771,32 +1009,37 @@ async function initializeAdmin() {
         createdAt: new Date(),
         updatedAt: new Date()
       });
-
       await settings.save();
       console.log('Default settings initialized successfully');
-    } else if (!settings.imapUser || !settings.imapPass) {
-      console.log('Existing settings found but IMAP not configured, updating...');
-      
-      settings.imapHost = 'imap.hostinger.com';
-      settings.imapPort = 993;
-      settings.imapUser = 'contact@jokercreation.store';
-      settings.imapPass = process.env.EMAIL_PASS || '9002405641@Adarsha';
-      settings.updatedAt = new Date();
-      
-      await settings.save();
-      console.log('IMAP settings updated successfully');
     }
 
-    if (!process.env.EMAIL_PASS && !settings.imapPass) {
-      console.warn('WARNING: Email password not set in environment variables or settings');
-    }
-
-    console.log('Admin initialization completed successfully');
+    console.log('RBAC admin initialization completed successfully');
     return { admin, settings };
     
   } catch (err) {
-    console.error('FATAL ERROR during initialization:', err);
-    throw new Error('Failed to initialize admin and settings');
+    console.error('FATAL ERROR during RBAC initialization:', err);
+    throw new Error('Failed to initialize RBAC admin system');
+  }
+}
+
+async function initializeRoles() {
+  try {
+    for (const [roleName, roleConfig] of Object.entries(rolePermissions)) {
+      await Role.findOneAndUpdate(
+        { name: roleName },
+        {
+          name: roleName,
+          permissions: roleConfig.permissions,
+          description: roleConfig.description,
+          isDefault: roleName === 'viewer'
+        },
+        { upsert: true, new: true }
+      );
+    }
+    console.log('RBAC roles initialized successfully');
+  } catch (err) {
+    console.error('Error initializing roles:', err);
+    throw err;
   }
 }
 
@@ -2869,7 +3112,11 @@ app.get('/api/wake-up', (req, res) => {
 
 // ===== BOOKING ROUTES ===== //
 
-app.get('/api/admin/bookings', authenticateAdmin, async (req, res) => {
+app.get('/api/admin/bookings', 
+  authenticateAdmin, 
+  checkPermission('bookings', 'read'),
+  auditLog('read', 'bookings'),
+  async (req, res) => {
   try {
     const { status, search, page = 1, limit = 10 } = req.query;
     let query = {};
@@ -2967,7 +3214,14 @@ app.get('/api/admin/bookings/stats', authenticateAdmin, async (req, res) => {
   }
 });
 
-app.put('/api/admin/bookings/:id', authenticateAdmin, async (req, res) => {
+app.put('/api/admin/bookings/:id',
+  authenticateAdmin,
+  checkPermission('bookings', 'update'),
+  auditLog('update', 'bookings', (req, data) => req.params.id),
+  async (req, res) => {
+    // Store old data for audit log
+    const oldBooking = await Booking.findById(req.params.id);
+    req.oldData = oldBooking ? oldBooking.toObject() : null;
     try {
         const { id } = req.params;
         const updates = req.body;
@@ -3142,7 +3396,11 @@ app.patch('/api/admin/bookings/:id/status', authenticateAdmin, async (req, res) 
 
 // ===== DELETE BOOKING ENDPOINT ===== //
 
-app.delete('/api/admin/bookings/:id', authenticateAdmin, async (req, res) => {
+app.delete('/api/admin/bookings/:id',
+  authenticateAdmin,
+  checkPermission('bookings', 'delete'),
+  auditLog('delete', 'bookings', (req, data) => req.params.id),
+  async (req, res) => {
   try {
     const { id } = req.params;
     
@@ -4946,7 +5204,12 @@ app.get('/api/admin/inbox/stats', authenticateAdmin, async (req, res) => {
 
 // ===== GALLERY ROUTES ===== //
 
-app.post('/api/admin/gallery', authenticateAdmin, upload.array('images', 10), async (req, res) => {
+app.post('/api/admin/gallery',
+  authenticateAdmin,
+  checkPermission('gallery', 'create'),
+  auditLog('create', 'gallery'),
+  upload.array('images', 10),
+  async (req, res) => {
   try {
     const { name, description, category, featured } = req.body;
     const files = req.files || [];
@@ -5000,7 +5263,11 @@ app.get('/api/admin/settings', authenticateAdmin, async (req, res) => {
   }
 });
 
-app.put('/api/admin/settings', authenticateAdmin, async (req, res) => {
+app.put('/api/admin/settings',
+  authenticateAdmin,
+  checkPermission('settings', 'update'),
+  auditLog('update', 'settings'),
+  async (req, res) => {
   try {
     const { imapHost, imapPort, imapUser, imapPass } = req.body;
     
@@ -5120,6 +5387,376 @@ app.put('/api/admin/settings/payment', authenticateAdmin, async (req, res) => {
     res.status(500).json({ error: 'Failed to update payment settings' });
   }
 });
+
+
+// ==================== RBAC ADMIN MANAGEMENT ROUTES ====================
+
+// Get all admins (super_admin only)
+app.get('/api/admin/management/admins', 
+  authenticateAdmin, 
+  checkPermission('system', 'read'),
+  auditLog('read', 'admins'),
+  async (req, res) => {
+    try {
+      const admins = await Admin.find()
+        .select('-password -webauthnCredentials')
+        .sort({ createdAt: -1 });
+      
+      res.json({ success: true, admins });
+    } catch (err) {
+      console.error('Error fetching admins:', err);
+      res.status(500).json({ error: 'Failed to fetch admins' });
+    }
+  }
+);
+
+// Create new admin (super_admin only)
+app.post('/api/admin/management/admins',
+  authenticateAdmin,
+  checkPermission('system', 'create'),
+  auditLog('create', 'admins', (req, data) => data.admin._id),
+  async (req, res) => {
+    try {
+      const { email, password, role } = req.body;
+
+      if (!email || !password || !role) {
+        return res.status(400).json({ error: 'Email, password, and role are required' });
+      }
+
+      if (!rolePermissions[role]) {
+        return res.status(400).json({ error: 'Invalid role specified' });
+      }
+
+      const existingAdmin = await Admin.findOne({ email });
+      if (existingAdmin) {
+        return res.status(400).json({ error: 'Admin with this email already exists' });
+      }
+
+      const hashedPassword = await bcrypt.hash(password, 10);
+      const newAdmin = new Admin({
+        email,
+        password: hashedPassword,
+        role,
+        isActive: true,
+        createdBy: req.admin._id
+      });
+
+      await newAdmin.save();
+
+      // Return without password
+      const adminResponse = await Admin.findById(newAdmin._id)
+        .select('-password -webauthnCredentials');
+
+      res.json({ 
+        success: true, 
+        message: 'Admin created successfully',
+        admin: adminResponse 
+      });
+    } catch (err) {
+      console.error('Error creating admin:', err);
+      res.status(500).json({ error: 'Failed to create admin' });
+    }
+  }
+);
+
+// Update admin role (super_admin only)
+app.put('/api/admin/management/admins/:id/role',
+  authenticateAdmin,
+  checkPermission('system', 'update'),
+  auditLog('update', 'admins', (req, data) => req.params.id),
+  async (req, res) => {
+    try {
+      const { role } = req.body;
+      const adminId = req.params.id;
+
+      if (!role || !rolePermissions[role]) {
+        return res.status(400).json({ error: 'Valid role is required' });
+      }
+
+      // Prevent self-demotion from super_admin
+      if (adminId === req.admin._id.toString() && role !== 'super_admin') {
+        return res.status(400).json({ error: 'Cannot remove your own super_admin role' });
+      }
+
+      const updatedAdmin = await Admin.findByIdAndUpdate(
+        adminId,
+        { role },
+        { new: true }
+      ).select('-password -webauthnCredentials');
+
+      if (!updatedAdmin) {
+        return res.status(404).json({ error: 'Admin not found' });
+      }
+
+      res.json({ 
+        success: true, 
+        message: 'Admin role updated successfully',
+        admin: updatedAdmin 
+      });
+    } catch (err) {
+      console.error('Error updating admin role:', err);
+      res.status(500).json({ error: 'Failed to update admin role' });
+    }
+  }
+);
+
+// Toggle admin active status (super_admin only)
+app.patch('/api/admin/management/admins/:id/status',
+  authenticateAdmin,
+  checkPermission('system', 'update'),
+  auditLog('update', 'admins', (req, data) => req.params.id),
+  async (req, res) => {
+    try {
+      const { isActive } = req.body;
+      const adminId = req.params.id;
+
+      // Prevent self-deactivation
+      if (adminId === req.admin._id.toString() && isActive === false) {
+        return res.status(400).json({ error: 'Cannot deactivate your own account' });
+      }
+
+      const updatedAdmin = await Admin.findByIdAndUpdate(
+        adminId,
+        { isActive },
+        { new: true }
+      ).select('-password -webauthnCredentials');
+
+      if (!updatedAdmin) {
+        return res.status(404).json({ error: 'Admin not found' });
+      }
+
+      res.json({ 
+        success: true, 
+        message: `Admin ${isActive ? 'activated' : 'deactivated'} successfully`,
+        admin: updatedAdmin 
+      });
+    } catch (err) {
+      console.error('Error updating admin status:', err);
+      res.status(500).json({ error: 'Failed to update admin status' });
+    }
+  }
+);
+
+// ==================== ANALYTICS & LOGGING ROUTES ====================
+
+// Get audit logs (super_admin only)
+app.get('/api/admin/analytics/audit-logs',
+  authenticateAdmin,
+  checkPermission('analytics', 'read'),
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 50, action, resource, startDate, endDate } = req.query;
+      
+      let query = {};
+      
+      if (action) query.action = action;
+      if (resource) query.resource = resource;
+      if (startDate || endDate) {
+        query.timestamp = {};
+        if (startDate) query.timestamp.$gte = new Date(startDate);
+        if (endDate) query.timestamp.$lte = new Date(endDate);
+      }
+
+      const skip = (page - 1) * limit;
+      const logs = await AuditLog.find(query)
+        .populate('adminId', 'email role')
+        .sort({ timestamp: -1 })
+        .skip(skip)
+        .limit(parseInt(limit));
+
+      const total = await AuditLog.countDocuments(query);
+
+      res.json({
+        success: true,
+        logs,
+        total,
+        totalPages: Math.ceil(total / limit),
+        currentPage: parseInt(page)
+      });
+    } catch (err) {
+      console.error('Error fetching audit logs:', err);
+      res.status(500).json({ error: 'Failed to fetch audit logs' });
+    }
+  }
+);
+
+// Get system analytics (admin roles with analytics read permission)
+app.get('/api/admin/analytics/dashboard',
+  authenticateAdmin,
+  checkPermission('analytics', 'read'),
+  async (req, res) => {
+    try {
+      const { period = '7d' } = req.query; // 7d, 30d, 90d
+      
+      const endDate = new Date();
+      const startDate = new Date();
+      
+      switch (period) {
+        case '30d':
+          startDate.setDate(startDate.getDate() - 30);
+          break;
+        case '90d':
+          startDate.setDate(startDate.getDate() - 90);
+          break;
+        default: // 7d
+          startDate.setDate(startDate.getDate() - 7);
+      }
+
+      // Get analytics data
+      const analyticsData = await Analytics.find({
+        date: { $gte: startDate, $lte: endDate }
+      }).sort({ date: 1 });
+
+      // Get recent activities
+      const recentActivities = await AuditLog.find()
+        .populate('adminId', 'email role')
+        .sort({ timestamp: -1 })
+        .limit(20);
+
+      // Get admin statistics
+      const adminStats = await Admin.aggregate([
+        { $group: { _id: '$role', count: { $sum: 1 } } }
+      ]);
+
+      // Get booking statistics
+      const bookingStats = await Booking.aggregate([
+        { $group: { _id: '$status', count: { $sum: 1 } } }
+      ]);
+
+      res.json({
+        success: true,
+        analytics: {
+          period: { start: startDate, end: endDate },
+          data: analyticsData,
+          summary: {
+            totalLogins: analyticsData.reduce((sum, day) => sum + day.logins, 0),
+            totalBookings: analyticsData.reduce((sum, day) => sum + day.bookingsCreated, 0),
+            totalActivities: analyticsData.reduce((sum, day) => sum + day.adminActivities, 0),
+            avgDailyLogins: (analyticsData.reduce((sum, day) => sum + day.logins, 0) / analyticsData.length) || 0
+          }
+        },
+        recentActivities,
+        adminStats,
+        bookingStats
+      });
+    } catch (err) {
+      console.error('Error fetching analytics:', err);
+      res.status(500).json({ error: 'Failed to fetch analytics data' });
+    }
+  }
+);
+
+// Get login statistics
+app.get('/api/admin/analytics/login-stats',
+  authenticateAdmin,
+  checkPermission('analytics', 'read'),
+  async (req, res) => {
+    try {
+      const { days = 30 } = req.query;
+      
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - parseInt(days));
+
+      const loginStats = await AuditLog.aggregate([
+        {
+          $match: {
+            action: 'login',
+            timestamp: { $gte: startDate }
+          }
+        },
+        {
+          $group: {
+            _id: {
+              date: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
+              adminId: "$adminId"
+            },
+            logins: { $sum: 1 },
+            firstLogin: { $min: "$timestamp" },
+            lastLogin: { $max: "$timestamp" }
+          }
+        },
+        {
+          $lookup: {
+            from: "admins",
+            localField: "_id.adminId",
+            foreignField: "_id",
+            as: "admin"
+          }
+        },
+        {
+          $group: {
+            _id: "$_id.date",
+            totalLogins: { $sum: "$logins" },
+            uniqueAdmins: { $sum: 1 },
+            admins: {
+              $push: {
+                email: { $arrayElemAt: ["$admin.email", 0] },
+                role: { $arrayElemAt: ["$admin.role", 0] },
+                logins: "$logins",
+                firstLogin: "$firstLogin",
+                lastLogin: "$lastLogin"
+              }
+            }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ]);
+
+      res.json({ success: true, loginStats });
+    } catch (err) {
+      console.error('Error fetching login stats:', err);
+      res.status(500).json({ error: 'Failed to fetch login statistics' });
+    }
+  }
+);
+
+
+// ==================== RBAC UTILITY ROUTES ====================
+
+// Get current admin's permissions
+app.get('/api/admin/my-permissions',
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      const role = req.admin.role;
+      const permissions = rolePermissions[role] || rolePermissions.viewer;
+      
+      res.json({
+        success: true,
+        admin: {
+          email: req.admin.email,
+          role: req.admin.role,
+          isActive: req.admin.isActive
+        },
+        permissions: permissions.permissions,
+        description: permissions.description
+      });
+    } catch (err) {
+      console.error('Error fetching permissions:', err);
+      res.status(500).json({ error: 'Failed to fetch permissions' });
+    }
+  }
+);
+
+// Get all available roles (for admin creation form)
+app.get('/api/admin/management/roles',
+  authenticateAdmin,
+  checkPermission('system', 'read'),
+  async (req, res) => {
+    try {
+      const roles = Object.entries(rolePermissions).map(([name, config]) => ({
+        name,
+        description: config.description,
+        permissions: config.permissions
+      }));
+      
+      res.json({ success: true, roles });
+    } catch (err) {
+      console.error('Error fetching roles:', err);
+      res.status(500).json({ error: 'Failed to fetch roles' });
+    }
+  }
+);
 
 // ===== SEARCH ROUTES ===== //
 
@@ -5932,6 +6569,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
