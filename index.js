@@ -940,25 +940,11 @@ async function updateAnalytics(action, resource, adminId) {
 // Initialize Admin Account
 // ==================== ENHANCED ADMIN INITIALIZATION ====================
 
-// ==================== ENHANCED ADMIN INITIALIZATION ====================
-
 async function initializeAdmin() {
   try {
     console.log('Starting RBAC admin initialization...');
     
-    // Get admin credentials from environment variables
-    const adminEmail = process.env.ADMIN_EMAIL || 'jokercreationbuisness@gmail.com';
-    const adminPassword = process.env.ADMIN_PASSWORD || '9002405641';
-    
-    // Validate that we have credentials
-    if (!adminEmail || !adminPassword) {
-      console.error('❌ ADMIN_EMAIL and ADMIN_PASSWORD environment variables are required');
-      throw new Error('Admin credentials not provided in environment variables');
-    }
-    
-    console.log('Admin credentials loaded from environment variables');
-    console.log('Email:', adminEmail);
-    console.log('Password:', '[HIDDEN]'); // Don't log the actual password
+    const adminEmail = 'jokercreationbuisness@gmail.com';
     
     // Initialize roles
     await initializeRoles();
@@ -966,7 +952,8 @@ async function initializeAdmin() {
     let admin = await Admin.findOne({ email: adminEmail });
     
     if (!admin) {
-      console.log('Super admin account not found, creating new one from environment variables...');
+      console.log('Super admin account not found, creating new one...');
+      const adminPassword = '9002405641';
       const hashedPassword = await bcrypt.hash(adminPassword, 10);
       
       admin = new Admin({
@@ -978,31 +965,14 @@ async function initializeAdmin() {
       });
       
       await admin.save();
-      console.log('✅ Super admin account created successfully with full privileges');
+      console.log('Super admin account created successfully with full privileges');
     } else {
-      // Ensure existing admin has super_admin role and update password if needed
-      let needsUpdate = false;
-      
+      // Ensure existing admin has super_admin role
       if (admin.role !== 'super_admin') {
         admin.role = 'super_admin';
-        needsUpdate = true;
-        console.log('🔄 Existing admin upgraded to super_admin role');
-      }
-      
-      // Verify password matches (or update if environment variable changed)
-      const isPasswordValid = await bcrypt.compare(adminPassword, admin.password);
-      if (!isPasswordValid) {
-        const hashedPassword = await bcrypt.hash(adminPassword, 10);
-        admin.password = hashedPassword;
-        needsUpdate = true;
-        console.log('🔄 Admin password updated from environment variable');
-      }
-      
-      if (needsUpdate) {
         await admin.save();
+        console.log('Existing admin upgraded to super_admin role');
       }
-      
-      console.log('✅ Existing super admin account verified and updated if necessary');
     }
 
     // Initialize settings (your existing code)
@@ -1025,14 +995,14 @@ async function initializeAdmin() {
         updatedAt: new Date()
       });
       await settings.save();
-      console.log('✅ Default settings initialized successfully');
+      console.log('Default settings initialized successfully');
     }
 
-    console.log('✅ RBAC admin initialization completed successfully');
+    console.log('RBAC admin initialization completed successfully');
     return { admin, settings };
     
   } catch (err) {
-    console.error('❌ FATAL ERROR during RBAC initialization:', err);
+    console.error('FATAL ERROR during RBAC initialization:', err);
     throw new Error('Failed to initialize RBAC admin system');
   }
 }
