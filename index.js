@@ -622,8 +622,7 @@ const analyticsSchema = new mongoose.Schema({
   uniqueVisitors: { type: Number, default: 0 }
 });
 
-const Role = mongoose.model('Role', roleSchema);
-const Admin = mongoose.model('Admin', adminSchema); // This replaces your existing Admin model
+const Role = mongoose.model('Role', roleSchema); 
 const AuditLog = mongoose.model('AuditLog', auditLogSchema);
 const Analytics = mongoose.model('Analytics', analyticsSchema);
 
@@ -6556,4 +6555,5 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
