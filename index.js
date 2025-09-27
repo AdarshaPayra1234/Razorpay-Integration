@@ -5552,6 +5552,58 @@ app.patch('/api/admin/management/admins/:id/status',
   }
 );
 
+// Get current admin profile
+app.get('/api/admin/profile',
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      const admin = await Admin.findById(req.admin._id)
+        .select('-password -webauthnCredentials');
+      
+      if (!admin) {
+        return res.status(404).json({ error: 'Admin not found' });
+      }
+
+      res.json({ 
+        success: true, 
+        admin: {
+          _id: admin._id,
+          email: admin.email,
+          role: admin.role,
+          isActive: admin.isActive,
+          createdAt: admin.createdAt,
+          lastLogin: admin.lastLogin
+        }
+      });
+    } catch (err) {
+      console.error('Error fetching admin profile:', err);
+      res.status(500).json({ error: 'Failed to fetch admin profile' });
+    }
+  }
+);
+
+// Get basic admin info (for RBAC initialization)
+app.get('/api/admin/info',
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      const admin = await Admin.findById(req.admin._id)
+        .select('role isActive');
+      
+      res.json({ 
+        success: true, 
+        admin: {
+          role: admin.role,
+          isActive: admin.isActive
+        }
+      });
+    } catch (err) {
+      console.error('Error fetching admin info:', err);
+      res.status(500).json({ error: 'Failed to fetch admin info' });
+    }
+  }
+);
+
 // ==================== ANALYTICS & LOGGING ROUTES ====================
 
 // Get audit logs (super_admin only)
@@ -6584,6 +6636,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
