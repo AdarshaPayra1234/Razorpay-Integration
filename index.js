@@ -561,24 +561,11 @@ const roleSchema = new mongoose.Schema({
 });
 
 // Admin Schema with RBAC (Replace your existing adminSchema)
-// Admin Schema with phone number
 const adminSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
-  phoneNumber: { 
-    type: String, 
-    required: true,
-    unique: true,
-    validate: {
-      validator: function(v) {
-        return /^\d{10}$/.test(v);
-      },
-      message: 'Phone number must be 10 digits'
-    }
-  },
   role: { type: String, required: true, default: 'viewer' },
   isActive: { type: Boolean, default: true },
-  phoneVerified: { type: Boolean, default: false },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
   lastLogin: Date,
   loginAttempts: { type: Number, default: 0 },
@@ -5419,8 +5406,6 @@ app.put('/api/admin/settings/payment', authenticateAdmin, async (req, res) => {
 
 // ==================== RBAC ADMIN MANAGEMENT ROUTES ====================
 
-// ==================== SUPER ADMIN MANAGEMENT ROUTES ====================
-
 // Get all admins (super_admin only)
 app.get('/api/admin/management/admins', 
   authenticateAdmin, 
@@ -5430,7 +5415,6 @@ app.get('/api/admin/management/admins',
     try {
       const admins = await Admin.find()
         .select('-password -webauthnCredentials')
-        .populate('createdBy', 'email')
         .sort({ createdAt: -1 });
       
       res.json({ success: true, admins });
@@ -5448,66 +5432,39 @@ app.post('/api/admin/management/admins',
   auditLog('create', 'admins', (req, data) => data.admin._id),
   async (req, res) => {
     try {
-      const { email, password, role, phoneNumber } = req.body;
+      const { email, password, role } = req.body;
 
-      if (!email || !password || !role || !phoneNumber) {
-        return res.status(400).json({ 
-          error: 'Email, password, role, and phone number are required' 
-        });
-      }
-
-      // Validate phone number format
-      if (!/^\d{10}$/.test(phoneNumber)) {
-        return res.status(400).json({ error: 'Phone number must be 10 digits' });
+      if (!email || !password || !role) {
+        return res.status(400).json({ error: 'Email, password, and role are required' });
       }
 
       if (!rolePermissions[role]) {
         return res.status(400).json({ error: 'Invalid role specified' });
       }
 
-      // Check if admin already exists with email or phone
-      const existingAdmin = await Admin.findOne({
-        $or: [{ email }, { phoneNumber }]
-      });
-      
+      const existingAdmin = await Admin.findOne({ email });
       if (existingAdmin) {
-        if (existingAdmin.email === email) {
-          return res.status(400).json({ error: 'Admin with this email already exists' });
-        }
-        if (existingAdmin.phoneNumber === phoneNumber) {
-          return res.status(400).json({ error: 'Admin with this phone number already exists' });
-        }
+        return res.status(400).json({ error: 'Admin with this email already exists' });
       }
 
       const hashedPassword = await bcrypt.hash(password, 10);
       const newAdmin = new Admin({
         email,
         password: hashedPassword,
-        phoneNumber,
         role,
         isActive: true,
-        phoneVerified: false, // Will be verified via OTP
         createdBy: req.admin._id
       });
 
       await newAdmin.save();
 
-      // Send OTP to the new admin's phone number
-      try {
-        await sendAdminWelcomeOTP(phoneNumber, email);
-      } catch (otpError) {
-        console.error('Failed to send welcome OTP:', otpError);
-        // Continue with admin creation even if OTP fails
-      }
-
       // Return without password
       const adminResponse = await Admin.findById(newAdmin._id)
-        .select('-password -webauthnCredentials')
-        .populate('createdBy', 'email');
+        .select('-password -webauthnCredentials');
 
       res.json({ 
         success: true, 
-        message: 'Admin created successfully. OTP sent for verification.',
+        message: 'Admin created successfully',
         admin: adminResponse 
       });
     } catch (err) {
@@ -5591,58 +5548,6 @@ app.patch('/api/admin/management/admins/:id/status',
     } catch (err) {
       console.error('Error updating admin status:', err);
       res.status(500).json({ error: 'Failed to update admin status' });
-    }
-  }
-);
-
-// Get current admin profile
-app.get('/api/admin/profile',
-  authenticateAdmin,
-  async (req, res) => {
-    try {
-      const admin = await Admin.findById(req.admin._id)
-        .select('-password -webauthnCredentials');
-      
-      if (!admin) {
-        return res.status(404).json({ error: 'Admin not found' });
-      }
-
-      res.json({ 
-        success: true, 
-        admin: {
-          _id: admin._id,
-          email: admin.email,
-          role: admin.role,
-          isActive: admin.isActive,
-          createdAt: admin.createdAt,
-          lastLogin: admin.lastLogin
-        }
-      });
-    } catch (err) {
-      console.error('Error fetching admin profile:', err);
-      res.status(500).json({ error: 'Failed to fetch admin profile' });
-    }
-  }
-);
-
-// Get basic admin info (for RBAC initialization)
-app.get('/api/admin/info',
-  authenticateAdmin,
-  async (req, res) => {
-    try {
-      const admin = await Admin.findById(req.admin._id)
-        .select('role isActive');
-      
-      res.json({ 
-        success: true, 
-        admin: {
-          role: admin.role,
-          isActive: admin.isActive
-        }
-      });
-    } catch (err) {
-      console.error('Error fetching admin info:', err);
-      res.status(500).json({ error: 'Failed to fetch admin info' });
     }
   }
 );
@@ -6679,16 +6584,3 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
