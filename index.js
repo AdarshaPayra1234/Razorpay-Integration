@@ -561,11 +561,24 @@ const roleSchema = new mongoose.Schema({
 });
 
 // Admin Schema with RBAC (Replace your existing adminSchema)
+// Admin Schema with phone number
 const adminSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
+  phoneNumber: { 
+    type: String, 
+    required: true,
+    unique: true,
+    validate: {
+      validator: function(v) {
+        return /^\d{10}$/.test(v);
+      },
+      message: 'Phone number must be 10 digits'
+    }
+  },
   role: { type: String, required: true, default: 'viewer' },
   isActive: { type: Boolean, default: true },
+  phoneVerified: { type: Boolean, default: false },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
   lastLogin: Date,
   loginAttempts: { type: Number, default: 0 },
@@ -5406,6 +5419,8 @@ app.put('/api/admin/settings/payment', authenticateAdmin, async (req, res) => {
 
 // ==================== RBAC ADMIN MANAGEMENT ROUTES ====================
 
+// ==================== SUPER ADMIN MANAGEMENT ROUTES ====================
+
 // Get all admins (super_admin only)
 app.get('/api/admin/management/admins', 
   authenticateAdmin, 
@@ -5415,6 +5430,7 @@ app.get('/api/admin/management/admins',
     try {
       const admins = await Admin.find()
         .select('-password -webauthnCredentials')
+        .populate('createdBy', 'email')
         .sort({ createdAt: -1 });
       
       res.json({ success: true, admins });
@@ -5432,39 +5448,66 @@ app.post('/api/admin/management/admins',
   auditLog('create', 'admins', (req, data) => data.admin._id),
   async (req, res) => {
     try {
-      const { email, password, role } = req.body;
+      const { email, password, role, phoneNumber } = req.body;
 
-      if (!email || !password || !role) {
-        return res.status(400).json({ error: 'Email, password, and role are required' });
+      if (!email || !password || !role || !phoneNumber) {
+        return res.status(400).json({ 
+          error: 'Email, password, role, and phone number are required' 
+        });
+      }
+
+      // Validate phone number format
+      if (!/^\d{10}$/.test(phoneNumber)) {
+        return res.status(400).json({ error: 'Phone number must be 10 digits' });
       }
 
       if (!rolePermissions[role]) {
         return res.status(400).json({ error: 'Invalid role specified' });
       }
 
-      const existingAdmin = await Admin.findOne({ email });
+      // Check if admin already exists with email or phone
+      const existingAdmin = await Admin.findOne({
+        $or: [{ email }, { phoneNumber }]
+      });
+      
       if (existingAdmin) {
-        return res.status(400).json({ error: 'Admin with this email already exists' });
+        if (existingAdmin.email === email) {
+          return res.status(400).json({ error: 'Admin with this email already exists' });
+        }
+        if (existingAdmin.phoneNumber === phoneNumber) {
+          return res.status(400).json({ error: 'Admin with this phone number already exists' });
+        }
       }
 
       const hashedPassword = await bcrypt.hash(password, 10);
       const newAdmin = new Admin({
         email,
         password: hashedPassword,
+        phoneNumber,
         role,
         isActive: true,
+        phoneVerified: false, // Will be verified via OTP
         createdBy: req.admin._id
       });
 
       await newAdmin.save();
 
+      // Send OTP to the new admin's phone number
+      try {
+        await sendAdminWelcomeOTP(phoneNumber, email);
+      } catch (otpError) {
+        console.error('Failed to send welcome OTP:', otpError);
+        // Continue with admin creation even if OTP fails
+      }
+
       // Return without password
       const adminResponse = await Admin.findById(newAdmin._id)
-        .select('-password -webauthnCredentials');
+        .select('-password -webauthnCredentials')
+        .populate('createdBy', 'email');
 
       res.json({ 
         success: true, 
-        message: 'Admin created successfully',
+        message: 'Admin created successfully. OTP sent for verification.',
         admin: adminResponse 
       });
     } catch (err) {
@@ -6636,6 +6679,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
