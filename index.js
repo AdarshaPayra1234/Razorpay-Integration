@@ -564,22 +564,12 @@ const roleSchema = new mongoose.Schema({
 const adminSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
-  role: { 
-    type: String, 
-    required: true, 
-    enum: ['super_admin', 'admin', 'booking_manager', 'viewer'],
-    default: 'viewer'
-  },
-  name: { type: String, required: true },
+  role: { type: String, required: true, default: 'viewer' },
   isActive: { type: Boolean, default: true },
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
   lastLogin: Date,
   loginAttempts: { type: Number, default: 0 },
   lockUntil: Date,
-  permissions: [{
-    resource: String,
-    actions: [String]
-  }],
   webauthnCredentials: [{
     credentialID: { type: String, required: true },
     credentialPublicKey: { type: String, required: true },
@@ -591,8 +581,6 @@ const adminSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
-
-const Admin = mongoose.model('Admin', adminSchema);
 
 // Audit Log Schema
 const auditLogSchema = new mongoose.Schema({
@@ -622,7 +610,8 @@ const analyticsSchema = new mongoose.Schema({
   uniqueVisitors: { type: Number, default: 0 }
 });
 
-const Role = mongoose.model('Role', roleSchema); 
+const Role = mongoose.model('Role', roleSchema);
+const Admin = mongoose.model('Admin', adminSchema); // This replaces your existing Admin model
 const AuditLog = mongoose.model('AuditLog', auditLogSchema);
 const Analytics = mongoose.model('Analytics', analyticsSchema);
 
@@ -695,14 +684,14 @@ const rolePermissions = {
       { resource: 'settings', actions: ['create', 'read', 'update', 'delete', 'manage'] },
       { resource: 'coupons', actions: ['create', 'read', 'update', 'delete', 'manage'] },
       { resource: 'analytics', actions: ['create', 'read', 'update', 'delete', 'manage'] },
-      { resource: 'system', actions: ['create', 'read', 'update', 'delete', 'manage'] },
-      { resource: 'logs', actions: ['read', 'manage'] }
+      { resource: 'system', actions: ['create', 'read', 'update', 'delete', 'manage'] }
     ],
     description: 'Full system access with unlimited privileges'
   },
   admin: {
     permissions: [
-      { resource: 'bookings', actions: ['create', 'read', 'update', 'delete'] },
+      { resource: 'bookings', actions: ['create', 'read', 'update', 'delete', 'manage'] },
+      { resource: 'users', actions: ['read', 'update'] },
       { resource: 'gallery', actions: ['create', 'read', 'update', 'delete'] },
       { resource: 'messages', actions: ['create', 'read', 'update', 'delete'] },
       { resource: 'settings', actions: ['read', 'update'] },
@@ -711,9 +700,19 @@ const rolePermissions = {
     ],
     description: 'Administrative access with most privileges'
   },
+  editor: {
+    permissions: [
+      { resource: 'bookings', actions: ['read', 'update'] },
+      { resource: 'gallery', actions: ['create', 'read', 'update', 'delete'] },
+      { resource: 'messages', actions: ['create', 'read', 'update'] },
+      { resource: 'coupons', actions: ['read'] }
+    ],
+    description: 'Content editing privileges'
+  },
   booking_manager: {
     permissions: [
       { resource: 'bookings', actions: ['create', 'read', 'update', 'manage'] },
+      { resource: 'users', actions: ['read'] },
       { resource: 'messages', actions: ['read', 'update'] }
     ],
     description: 'Booking management privileges'
@@ -6555,5 +6554,3 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
-
-
