@@ -5524,6 +5524,8 @@ app.patch('/api/admin/management/admins/:id/status',
 
 // ==================== ANALYTICS & LOGGING ROUTES ====================
 
+// ==================== ANALYTICS & LOGGING ROUTES ====================
+
 // Get audit logs (super_admin only)
 app.get('/api/admin/analytics/audit-logs',
   authenticateAdmin,
@@ -5587,42 +5589,161 @@ app.get('/api/admin/analytics/dashboard',
           startDate.setDate(startDate.getDate() - 7);
       }
 
-      // Get analytics data
-      const analyticsData = await Analytics.find({
-        date: { $gte: startDate, $lte: endDate }
-      }).sort({ date: 1 });
+      // Get login statistics
+      const loginStats = await AuditLog.aggregate([
+        {
+          $match: {
+            action: 'login',
+            timestamp: { $gte: startDate, $lte: endDate }
+          }
+        },
+        {
+          $group: {
+            _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
+            logins: { $sum: 1 },
+            failedLogins: { 
+              $sum: { 
+                $cond: [{ $ifNull: ["$failed", false] }, 1, 0] 
+              } 
+            }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ]);
 
-      // Get recent activities
-      const recentActivities = await AuditLog.find()
-        .populate('adminId', 'email role')
-        .sort({ timestamp: -1 })
-        .limit(20);
+      // Get booking statistics
+      const bookingStats = await Booking.aggregate([
+        {
+          $match: {
+            createdAt: { $gte: startDate, $lte: endDate }
+          }
+        },
+        {
+          $group: {
+            _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+            bookingsCreated: { $sum: 1 }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ]);
+
+      // Get message statistics
+      const messageStats = await Message.aggregate([
+        {
+          $match: {
+            createdAt: { $gte: startDate, $lte: endDate }
+          }
+        },
+        {
+          $group: {
+            _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+            messagesSent: { $sum: 1 }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ]);
+
+      // Get admin activities
+      const adminActivities = await AuditLog.aggregate([
+        {
+          $match: {
+            timestamp: { $gte: startDate, $lte: endDate },
+            action: { $ne: 'login' }
+          }
+        },
+        {
+          $group: {
+            _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
+            adminActivities: { $sum: 1 }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ]);
+
+      // Combine all analytics data by date
+      const analyticsMap = new Map();
+
+      // Initialize all dates in the range
+      const currentDate = new Date(startDate);
+      while (currentDate <= endDate) {
+        const dateStr = currentDate.toISOString().split('T')[0];
+        analyticsMap.set(dateStr, {
+          date: dateStr,
+          logins: 0,
+          failedLogins: 0,
+          bookingsCreated: 0,
+          messagesSent: 0,
+          adminActivities: 0
+        });
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+
+      // Fill in actual data
+      loginStats.forEach(stat => {
+        if (analyticsMap.has(stat._id)) {
+          analyticsMap.get(stat._id).logins = stat.logins;
+          analyticsMap.get(stat._id).failedLogins = stat.failedLogins || 0;
+        }
+      });
+
+      bookingStats.forEach(stat => {
+        if (analyticsMap.has(stat._id)) {
+          analyticsMap.get(stat._id).bookingsCreated = stat.bookingsCreated;
+        }
+      });
+
+      messageStats.forEach(stat => {
+        if (analyticsMap.has(stat._id)) {
+          analyticsMap.get(stat._id).messagesSent = stat.messagesSent;
+        }
+      });
+
+      adminActivities.forEach(stat => {
+        if (analyticsMap.has(stat._id)) {
+          analyticsMap.get(stat._id).adminActivities = stat.adminActivities;
+        }
+      });
+
+      const analyticsData = Array.from(analyticsMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+      // Get recent activities for the dashboard
+      const recentActivities = await AuditLog.find({
+        timestamp: { $gte: startDate }
+      })
+      .populate('adminId', 'email role')
+      .sort({ timestamp: -1 })
+      .limit(10)
+      .lean();
+
+      // Calculate totals for the stat cards
+      const totalLogins = loginStats.reduce((sum, day) => sum + day.logins, 0);
+      const failedLogins = loginStats.reduce((sum, day) => sum + (day.failedLogins || 0), 0);
+      const bookingsCreated = bookingStats.reduce((sum, day) => sum + day.bookingsCreated, 0);
+      const messagesSent = messageStats.reduce((sum, day) => sum + day.messagesSent, 0);
 
       // Get admin statistics
       const adminStats = await Admin.aggregate([
         { $group: { _id: '$role', count: { $sum: 1 } } }
       ]);
 
-      // Get booking statistics
-      const bookingStats = await Booking.aggregate([
+      // Get booking status statistics
+      const bookingStatusStats = await Booking.aggregate([
         { $group: { _id: '$status', count: { $sum: 1 } } }
       ]);
 
       res.json({
         success: true,
-        analytics: {
-          period: { start: startDate, end: endDate },
-          data: analyticsData,
-          summary: {
-            totalLogins: analyticsData.reduce((sum, day) => sum + day.logins, 0),
-            totalBookings: analyticsData.reduce((sum, day) => sum + day.bookingsCreated, 0),
-            totalActivities: analyticsData.reduce((sum, day) => sum + day.adminActivities, 0),
-            avgDailyLogins: (analyticsData.reduce((sum, day) => sum + day.logins, 0) / analyticsData.length) || 0
-          }
-        },
+        analytics: analyticsData,
         recentActivities,
         adminStats,
-        bookingStats
+        bookingStats: bookingStatusStats,
+        summary: {
+          totalLogins,
+          failedLogins,
+          bookingsCreated,
+          messagesSent,
+          totalActivities: adminActivities.reduce((sum, day) => sum + day.adminActivities, 0)
+        }
       });
     } catch (err) {
       console.error('Error fetching analytics:', err);
@@ -6554,3 +6675,4 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
