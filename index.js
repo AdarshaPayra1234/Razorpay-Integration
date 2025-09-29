@@ -4598,6 +4598,31 @@ app.get('/api/portfolio', async (req, res) => {
   }
 });
 
+// ==================== RENDER FREE TIER KEEP-AWAKE ENDPOINTS ====================
+
+// Simple keep-alive endpoint for Render free tier
+app.get('/api/keep-alive', (req, res) => {
+  console.log(`🏓 Keep-alive ping at: ${new Date().toISOString()} from IP: ${req.ip}`);
+  
+  res.json({ 
+    success: true, 
+    message: 'Server is awake!',
+    timestamp: new Date().toISOString(),
+    serverTime: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+    uptime: process.uptime()
+  });
+});
+
+// Quick health check for cronjobs
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: Math.round(process.memoryUsage().rss / 1024 / 1024) + ' MB'
+  });
+});
+
 // ===== MESSAGE ROUTES ===== //
 
 app.post('/api/admin/messages', authenticateAdmin, upload.array('attachments', 5), async (req, res) => {
@@ -6675,4 +6700,5 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
