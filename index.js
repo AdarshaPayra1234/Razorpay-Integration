@@ -984,11 +984,15 @@ async function updateAnalytics(action, resource, adminId) {
 }
 
 // OneSignal Configuration
-const OneSignal = require("@onesignal/node-onesignal");
-const oneSignalClient = new OneSignal.Client(
-  process.env.ONESIGNAL_APP_ID,
-  process.env.ONESIGNAL_API_KEY
-);
+const OneSignal = require('@onesignal/node-onesignal');
+
+const configuration = OneSignal.createConfiguration({
+  userAuthKey: process.env.ONESIGNAL_API_KEY, // your REST API key
+  appAuthKey: process.env.ONESIGNAL_APP_ID   // your App ID
+});
+
+const oneSignalClient = new OneSignal.DefaultApi(configuration);
+
 
 // Initialize Admin Account
 // ==================== ENHANCED ADMIN INITIALIZATION ====================
@@ -7290,6 +7294,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
