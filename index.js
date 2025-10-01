@@ -615,6 +615,52 @@ const Admin = mongoose.model('Admin', adminSchema); // This replaces your existi
 const AuditLog = mongoose.model('AuditLog', auditLogSchema);
 const Analytics = mongoose.model('Analytics', analyticsSchema);
 
+// Notification Schema
+const notificationSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  message: { type: String, required: true },
+  type: { 
+    type: String, 
+    enum: ['info', 'success', 'warning', 'error', 'promotional', 'booking', 'system'],
+    default: 'info'
+  },
+  imageUrl: String,
+  actionUrl: String,
+  targetUsers: { type: [String], default: [] }, // Specific user emails
+  targetAll: { type: Boolean, default: false }, // Send to all users
+  sentViaOneSignal: { type: Boolean, default: false },
+  oneSignalId: String,
+  readBy: [{ 
+    userEmail: String,
+    readAt: { type: Date, default: Date.now }
+  }],
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+  scheduledFor: Date,
+  isSent: { type: Boolean, default: false }
+}, {
+  timestamps: true
+});
+
+// User Notification Preferences Schema
+const userNotificationPrefsSchema = new mongoose.Schema({
+  userEmail: { type: String, required: true, unique: true },
+  oneSignalPlayerId: String,
+  allowPush: { type: Boolean, default: true },
+  allowEmail: { type: Boolean, default: true },
+  allowSMS: { type: Boolean, default: false },
+  categories: {
+    promotional: { type: Boolean, default: true },
+    booking: { type: Boolean, default: true },
+    system: { type: Boolean, default: true }
+  },
+  lastSeen: { type: Date, default: Date.now }
+}, {
+  timestamps: true
+});
+
+const Notification = mongoose.model('Notification', notificationSchema);
+const UserNotificationPrefs = mongoose.model('UserNotificationPrefs', userNotificationPrefsSchema);
+
 // ==================== MIDDLEWARE ====================
 
 // FIX: Updated Rate Limiting with proper proxy support
@@ -937,6 +983,13 @@ async function updateAnalytics(action, resource, adminId) {
   }
 }
 
+// OneSignal Configuration
+const OneSignal = require('onesignal-node');
+const oneSignalClient = new OneSignal.Client(
+  process.env.ONESIGNAL_APP_ID,
+  process.env.ONESIGNAL_API_KEY
+);
+
 // Initialize Admin Account
 // ==================== ENHANCED ADMIN INITIALIZATION ====================
 
@@ -1133,6 +1186,148 @@ async function deleteFromFreeimageHost(deleteUrl, imageId) {
     }
     
     return false;
+  }
+}
+
+// ==================== NOTIFICATION UTILITIES ====================
+
+// Send notification via OneSignal
+async function sendOneSignalNotification(notificationData) {
+  try {
+    const { title, message, imageUrl, actionUrl, targetUsers, targetAll, data } = notificationData;
+
+    const notification = {
+      contents: {
+        en: message
+      },
+      headings: {
+        en: title
+      },
+      ...(imageUrl && {
+        big_picture: imageUrl,
+        chrome_web_image: imageUrl,
+        firefox_icon: imageUrl
+      }),
+      ...(actionUrl && {
+        url: actionUrl,
+        web_url: actionUrl
+      }),
+      ...(data && { data }),
+      app_id: process.env.ONESIGNAL_APP_ID
+    };
+
+    // Target specific users or all users
+    if (targetUsers && targetUsers.length > 0) {
+      // Get player IDs for target users
+      const userPrefs = await UserNotificationPrefs.find({ 
+        userEmail: { $in: targetUsers },
+        oneSignalPlayerId: { $exists: true, $ne: null }
+      });
+      
+      const playerIds = userPrefs.map(pref => pref.oneSignalPlayerId).filter(id => id);
+      
+      if (playerIds.length > 0) {
+        notification.include_player_ids = playerIds;
+      } else {
+        throw new Error('No valid player IDs found for target users');
+      }
+    } else if (targetAll) {
+      notification.included_segments = ['Subscribed Users'];
+    } else {
+      throw new Error('Either targetUsers or targetAll must be specified');
+    }
+
+    const response = await oneSignalClient.createNotification(notification);
+    return response.body;
+  } catch (error) {
+    console.error('OneSignal notification error:', error);
+    throw error;
+  }
+}
+
+// Create notification in database
+async function createNotification(notificationData) {
+  try {
+    const notification = new Notification(notificationData);
+    await notification.save();
+    return notification;
+  } catch (error) {
+    console.error('Error creating notification:', error);
+    throw error;
+  }
+}
+
+// Send combined notification (DB + OneSignal)
+async function sendCombinedNotification(notificationData) {
+  try {
+    // Save to database first
+    const dbNotification = await createNotification(notificationData);
+
+    // Send via OneSignal if configured
+    if (process.env.ONESIGNAL_APP_ID && process.env.ONESIGNAL_API_KEY) {
+      try {
+        const oneSignalResponse = await sendOneSignalNotification(notificationData);
+        dbNotification.sentViaOneSignal = true;
+        dbNotification.oneSignalId = oneSignalResponse.id;
+        await dbNotification.save();
+      } catch (oneSignalError) {
+        console.error('OneSignal delivery failed, but notification saved to DB:', oneSignalError.message);
+      }
+    }
+
+    return dbNotification;
+  } catch (error) {
+    console.error('Error sending combined notification:', error);
+    throw error;
+  }
+}
+
+// Get unread notifications for user
+async function getUserNotifications(userEmail, limit = 20) {
+  try {
+    const notifications = await Notification.find({
+      $and: [
+        {
+          $or: [
+            { targetAll: true },
+            { targetUsers: userEmail }
+          ]
+        },
+        { isSent: true },
+        {
+          readBy: {
+            $not: {
+              $elemMatch: { userEmail: userEmail }
+            }
+          }
+        }
+      ]
+    })
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .populate('createdBy', 'email');
+
+    return notifications;
+  } catch (error) {
+    console.error('Error fetching user notifications:', error);
+    throw error;
+  }
+}
+
+// Mark notification as read
+async function markAsRead(notificationId, userEmail) {
+  try {
+    await Notification.findByIdAndUpdate(notificationId, {
+      $addToSet: {
+        readBy: {
+          userEmail: userEmail,
+          readAt: new Date()
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error marking notification as read:', error);
+    throw error;
   }
 }
 
@@ -5941,6 +6136,401 @@ app.get('/api/admin/search', authenticateAdmin, async (req, res) => {
   }
 });
 
+
+// ==================== NOTIFICATION ROUTES ====================
+
+// Register user for push notifications
+app.post('/api/notifications/register', async (req, res) => {
+  try {
+    const { userEmail, playerId } = req.body;
+
+    if (!userEmail || !playerId) {
+      return res.status(400).json({
+        success: false,
+        error: 'User email and player ID are required'
+      });
+    }
+
+    await UserNotificationPrefs.findOneAndUpdate(
+      { userEmail },
+      {
+        userEmail,
+        oneSignalPlayerId: playerId,
+        allowPush: true
+      },
+      { upsert: true, new: true }
+    );
+
+    res.json({
+      success: true,
+      message: 'User registered for push notifications'
+    });
+  } catch (error) {
+    console.error('Error registering user for notifications:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to register for notifications'
+    });
+  }
+});
+
+// Get user notifications
+app.get('/api/notifications/my-notifications', async (req, res) => {
+  try {
+    const { userEmail } = req.query;
+
+    if (!userEmail) {
+      return res.status(400).json({
+        success: false,
+        error: 'User email is required'
+      });
+    }
+
+    const notifications = await getUserNotifications(userEmail, 50);
+
+    res.json({
+      success: true,
+      notifications
+    });
+  } catch (error) {
+    console.error('Error fetching user notifications:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch notifications'
+    });
+  }
+});
+
+// Mark notification as read
+app.post('/api/notifications/:id/read', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userEmail } = req.body;
+
+    if (!userEmail) {
+      return res.status(400).json({
+        success: false,
+        error: 'User email is required'
+      });
+    }
+
+    await markAsRead(id, userEmail);
+
+    res.json({
+      success: true,
+      message: 'Notification marked as read'
+    });
+  } catch (error) {
+    console.error('Error marking notification as read:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to mark notification as read'
+    });
+  }
+});
+
+// Mark all notifications as read
+app.post('/api/notifications/mark-all-read', async (req, res) => {
+  try {
+    const { userEmail } = req.body;
+
+    if (!userEmail) {
+      return res.status(400).json({
+        success: false,
+        error: 'User email is required'
+      });
+    }
+
+    // Get all unread notifications for user
+    const unreadNotifications = await Notification.find({
+      $and: [
+        {
+          $or: [
+            { targetAll: true },
+            { targetUsers: userEmail }
+          ]
+        },
+        { isSent: true },
+        {
+          readBy: {
+            $not: {
+              $elemMatch: { userEmail: userEmail }
+            }
+          }
+        }
+      ]
+    });
+
+    // Mark all as read
+    for (const notification of unreadNotifications) {
+      await markAsRead(notification._id, userEmail);
+    }
+
+    res.json({
+      success: true,
+      message: 'All notifications marked as read'
+    });
+  } catch (error) {
+    console.error('Error marking all notifications as read:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to mark notifications as read'
+    });
+  }
+});
+
+// ==================== ADMIN NOTIFICATION ROUTES ====================
+
+// Send notification (Admin)
+app.post('/api/admin/notifications/send',
+  authenticateAdmin,
+  checkPermission('messages', 'create'),
+  auditLog('create', 'notifications'),
+  async (req, res) => {
+    try {
+      const {
+        title,
+        message,
+        type = 'info',
+        imageUrl,
+        actionUrl,
+        targetUsers = [],
+        targetAll = false,
+        scheduledFor
+      } = req.body;
+
+      if (!title || !message) {
+        return res.status(400).json({
+          success: false,
+          error: 'Title and message are required'
+        });
+      }
+
+      if (!targetAll && (!targetUsers || targetUsers.length === 0)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Either target all users or specify target users'
+        });
+      }
+
+      const notificationData = {
+        title,
+        message,
+        type,
+        imageUrl,
+        actionUrl,
+        targetUsers,
+        targetAll,
+        createdBy: req.admin._id,
+        scheduledFor: scheduledFor ? new Date(scheduledFor) : null,
+        isSent: !scheduledFor // Mark as sent immediately if not scheduled
+      };
+
+      let notification;
+
+      if (scheduledFor) {
+        // Save as scheduled notification
+        notification = await createNotification(notificationData);
+      } else {
+        // Send immediately
+        notification = await sendCombinedNotification(notificationData);
+      }
+
+      res.json({
+        success: true,
+        message: scheduledFor ? 'Notification scheduled' : 'Notification sent successfully',
+        notification
+      });
+    } catch (error) {
+      console.error('Error sending notification:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to send notification',
+        details: error.message
+      });
+    }
+  }
+);
+
+// Get all notifications (Admin)
+app.get('/api/admin/notifications',
+  authenticateAdmin,
+  checkPermission('messages', 'read'),
+  async (req, res) => {
+    try {
+      const { page = 1, limit = 20, type, status } = req.query;
+
+      let query = {};
+      if (type) query.type = type;
+      if (status === 'scheduled') query.isSent = false;
+      if (status === 'sent') query.isSent = true;
+
+      const skip = (page - 1) * limit;
+      const notifications = await Notification.find(query)
+        .populate('createdBy', 'email')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit));
+
+      const total = await Notification.countDocuments(query);
+
+      res.json({
+        success: true,
+        notifications,
+        total,
+        totalPages: Math.ceil(total / limit),
+        currentPage: parseInt(page)
+      });
+    } catch (error) {
+      console.error('Error fetching notifications:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to fetch notifications'
+      });
+    }
+  }
+);
+
+// Get notification statistics (Admin)
+app.get('/api/admin/notifications/stats',
+  authenticateAdmin,
+  checkPermission('analytics', 'read'),
+  async (req, res) => {
+    try {
+      const totalNotifications = await Notification.countDocuments();
+      const sentNotifications = await Notification.countDocuments({ isSent: true });
+      const scheduledNotifications = await Notification.countDocuments({ isSent: false });
+
+      const typeStats = await Notification.aggregate([
+        { $group: { _id: '$type', count: { $sum: 1 } } }
+      ]);
+
+      const recentNotifications = await Notification.countDocuments({
+        createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+      });
+
+      res.json({
+        success: true,
+        stats: {
+          total: totalNotifications,
+          sent: sentNotifications,
+          scheduled: scheduledNotifications,
+          recent: recentNotifications,
+          byType: typeStats
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching notification stats:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to fetch notification statistics'
+      });
+    }
+  }
+);
+
+// Update notification (Admin)
+app.put('/api/admin/notifications/:id',
+  authenticateAdmin,
+  checkPermission('messages', 'update'),
+  auditLog('update', 'notifications', (req, data) => req.params.id),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const updates = req.body;
+
+      const notification = await Notification.findByIdAndUpdate(
+        id,
+        updates,
+        { new: true, runValidators: true }
+      ).populate('createdBy', 'email');
+
+      if (!notification) {
+        return res.status(404).json({
+          success: false,
+          error: 'Notification not found'
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Notification updated successfully',
+        notification
+      });
+    } catch (error) {
+      console.error('Error updating notification:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to update notification'
+      });
+    }
+  }
+);
+
+// Delete notification (Admin)
+app.delete('/api/admin/notifications/:id',
+  authenticateAdmin,
+  checkPermission('messages', 'delete'),
+  auditLog('delete', 'notifications', (req, data) => req.params.id),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const notification = await Notification.findByIdAndDelete(id);
+
+      if (!notification) {
+        return res.status(404).json({
+          success: false,
+          error: 'Notification not found'
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Notification deleted successfully'
+      });
+    } catch (error) {
+      console.error('Error deleting notification:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to delete notification'
+      });
+    }
+  }
+);
+
+// Send scheduled notifications (Cron job)
+async function sendScheduledNotifications() {
+  try {
+    const now = new Date();
+    const scheduledNotifications = await Notification.find({
+      isSent: false,
+      scheduledFor: { $lte: now }
+    });
+
+    for (const notification of scheduledNotifications) {
+      try {
+        await sendCombinedNotification({
+          ...notification.toObject(),
+          isSent: true
+        });
+        
+        notification.isSent = true;
+        await notification.save();
+        
+        console.log(`Sent scheduled notification: ${notification.title}`);
+      } catch (error) {
+        console.error(`Failed to send scheduled notification ${notification._id}:`, error);
+      }
+    }
+  } catch (error) {
+    console.error('Error in scheduled notifications job:', error);
+  }
+}
+
+// Run every minute to check for scheduled notifications
+cron.schedule('* * * * *', sendScheduledNotifications);
+
 // ===== USER ROUTES ===== //
 
 app.get('/api/user-data', async (req, res) => {
@@ -6700,5 +7290,6 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
