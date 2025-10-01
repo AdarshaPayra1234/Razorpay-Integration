@@ -1315,6 +1315,7 @@ async function sendOneSignalNotification(notificationData) {
 }
 
 // Email notification function for web users
+// Fixed email notification function
 async function sendEmailNotification(notificationData) {
   try {
     console.log('Sending email notification:', {
@@ -1323,21 +1324,37 @@ async function sendEmailNotification(notificationData) {
       targetUsersCount: notificationData.targetUsers?.length || 0
     });
 
-    // Get target users
+    // Get target users - use your existing user data
     let userEmails = [];
     
     if (notificationData.targetAll) {
-      // Get all active users from your database
-      // Replace 'User' with your actual user model
-      const users = await User.find({ isActive: true }).select('email');
-      userEmails = users.map(user => user.email);
-      console.log(`Found ${userEmails.length} active users for email notification`);
+      try {
+        // Try to get users from your bookings API or use a fallback
+        const response = await fetch(`${BOOKINGS_API_URL}/api/admin/users`, {
+          headers: {
+            'Authorization': `Bearer ${bookingsAuthToken}`
+          }
+        });
+        
+        if (response.ok) {
+          const usersData = await response.json();
+          userEmails = usersData.users ? usersData.users.map(user => user.email) : [];
+          console.log(`Found ${userEmails.length} users for email notification`);
+        } else {
+          console.log('Could not fetch users, using target users list');
+          userEmails = notificationData.targetUsers || [];
+        }
+      } catch (error) {
+        console.log('Error fetching users, using target users list:', error.message);
+        userEmails = notificationData.targetUsers || [];
+      }
     } else {
       // Use specified users
       userEmails = notificationData.targetUsers;
     }
 
     if (userEmails.length === 0) {
+      console.log('No users found for email notification');
       return {
         success: true,
         skipped: true,
@@ -1345,40 +1362,48 @@ async function sendEmailNotification(notificationData) {
       };
     }
 
-    // Send email to each user using your existing email system
-    for (const email of userEmails) {
-      try {
-        await sendSingleEmail({
-          to: email,
-          subject: notificationData.title,
-          html: `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-              <h2 style="color: #FF9900;">${notificationData.title}</h2>
-              <p style="font-size: 16px; line-height: 1.5;">${notificationData.message}</p>
-              ${notificationData.actionUrl ? `
-                <a href="${notificationData.actionUrl}" 
-                   style="display: inline-block; padding: 12px 24px; background: #FF9900; color: white; text-decoration: none; border-radius: 4px; margin-top: 16px;">
-                  View Details
-                </a>
-              ` : ''}
-              <hr style="margin: 24px 0; border: none; border-top: 1px solid #eee;">
-              <p style="color: #666; font-size: 14px;">
-                This is an automated notification from Joker Creation Studio.
-              </p>
-            </div>
-          `
-        });
-      } catch (emailError) {
-        console.error(`Failed to send email to ${email}:`, emailError.message);
-        // Continue with other emails even if one fails
-      }
-    }
+    console.log(`Sending email to ${userEmails.length} users`);
 
-    return {
-      success: true,
-      emailsSent: userEmails.length,
-      target: notificationData.targetAll ? 'all_users' : 'specific_users'
-    };
+    // Send email using your existing message system
+    try {
+      const emailResponse = await fetch(`${BOOKINGS_API_URL}/api/admin/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${bookingsAuthToken}`
+        },
+        body: JSON.stringify({
+          userEmails: userEmails,
+          subject: notificationData.title,
+          message: `
+            ${notificationData.message}
+            
+            ${notificationData.actionUrl ? `\nAction URL: ${notificationData.actionUrl}` : ''}
+            
+            ---
+            This is an automated notification from Joker Creation Studio.
+          `,
+          isHtml: false
+        })
+      });
+
+      if (!emailResponse.ok) {
+        throw new Error(`Email API returned ${emailResponse.status}`);
+      }
+
+      const emailResult = await emailResponse.json();
+      
+      return {
+        success: true,
+        emailsSent: userEmails.length,
+        target: notificationData.targetAll ? 'all_users' : 'specific_users',
+        emailResult
+      };
+
+    } catch (emailError) {
+      console.error('Email sending failed:', emailError.message);
+      throw emailError;
+    }
 
   } catch (error) {
     console.error('Email notification error:', error.message);
@@ -7739,6 +7764,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
