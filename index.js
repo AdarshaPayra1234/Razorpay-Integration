@@ -1196,55 +1196,129 @@ async function deleteFromFreeimageHost(deleteUrl, imageId) {
 // ==================== NOTIFICATION UTILITIES ====================
 
 // Send notification via OneSignal
+// Improved OneSignal notification function
 async function sendOneSignalNotification(notificationData) {
   try {
-    const { title, message, imageUrl, actionUrl, targetUsers, targetAll, data } = notificationData;
+    console.log('Sending OneSignal notification:', {
+      title: notificationData.title,
+      message: notificationData.message,
+      targetAll: notificationData.targetAll,
+      targetUsersCount: notificationData.targetUsers?.length || 0
+    });
 
-    const notification = {
-      contents: {
-        en: message
-      },
-      headings: {
-        en: title
-      },
-      ...(imageUrl && {
-        big_picture: imageUrl,
-        chrome_web_image: imageUrl,
-        firefox_icon: imageUrl
-      }),
-      ...(actionUrl && {
-        url: actionUrl,
-        web_url: actionUrl
-      }),
-      ...(data && { data }),
-      app_id: process.env.ONESIGNAL_APP_ID
-    };
-
-    // Target specific users or all users
-    if (targetUsers && targetUsers.length > 0) {
-      // Get player IDs for target users
-      const userPrefs = await UserNotificationPrefs.find({ 
-        userEmail: { $in: targetUsers },
-        oneSignalPlayerId: { $exists: true, $ne: null }
-      });
-      
-      const playerIds = userPrefs.map(pref => pref.oneSignalPlayerId).filter(id => id);
-      
-      if (playerIds.length > 0) {
-        notification.include_player_ids = playerIds;
-      } else {
-        throw new Error('No valid player IDs found for target users');
-      }
-    } else if (targetAll) {
-      notification.included_segments = ['Subscribed Users'];
-    } else {
-      throw new Error('Either targetUsers or targetAll must be specified');
+    // Check if OneSignal is configured
+    if (!process.env.ONESIGNAL_APP_ID || !process.env.ONESIGNAL_API_KEY) {
+      throw new Error('OneSignal configuration missing: Check ONESIGNAL_APP_ID and ONESIGNAL_API_KEY environment variables');
     }
 
-    const response = await oneSignalClient.createNotification(notification);
-    return response.body;
+    // Validate OneSignal credentials format
+    const appId = process.env.ONESIGNAL_APP_ID.trim();
+    const apiKey = process.env.ONESIGNAL_API_KEY.trim();
+
+    if (!appId || appId === 'your_onesignal_app_id') {
+      throw new Error('OneSignal App ID not configured');
+    }
+
+    if (!apiKey || apiKey === 'your_onesignal_api_key') {
+      throw new Error('OneSignal API Key not configured');
+    }
+
+    // Create notification payload
+    const notificationPayload = {
+      app_id: appId,
+      contents: { en: notificationData.message },
+      headings: { en: notificationData.title },
+      data: {
+        type: notificationData.type,
+        actionUrl: notificationData.actionUrl
+      }
+    };
+
+    // Add target audience
+    if (notificationData.targetAll) {
+      // Send to all subscribed users
+      notificationPayload.included_segments = ['Subscribed Users'];
+      console.log('Targeting: All subscribed users');
+    } else if (notificationData.targetUsers && notificationData.targetUsers.length > 0) {
+      // Get OneSignal player IDs for specific users
+      const userEmails = notificationData.targetUsers;
+      const userPrefs = await UserNotificationPrefs.find({
+        userEmail: { $in: userEmails },
+        oneSignalPlayerId: { $exists: true, $ne: null },
+        allowPush: true
+      });
+
+      const playerIds = userPrefs.map(pref => pref.oneSignalPlayerId).filter(id => id);
+      
+      if (playerIds.length === 0) {
+        throw new Error('No users found with push notification enabled for the specified emails');
+      }
+
+      notificationPayload.include_player_ids = playerIds;
+      console.log(`Targeting: ${playerIds.length} specific users`);
+    } else {
+      throw new Error('No valid target specified for notification');
+    }
+
+    // Add optional fields
+    if (notificationData.imageUrl) {
+      notificationPayload.big_picture = notificationData.imageUrl;
+      notificationPayload.large_icon = notificationData.imageUrl;
+    }
+
+    if (notificationData.actionUrl) {
+      notificationPayload.url = notificationData.actionUrl;
+    }
+
+    console.log('OneSignal payload:', JSON.stringify(notificationPayload, null, 2));
+
+    // Send to OneSignal
+    const response = await fetch('https://onesignal.com/api/v1/notifications', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Basic ${apiKey}`
+      },
+      body: JSON.stringify(notificationPayload)
+    });
+
+    console.log('OneSignal API Response status:', response.status);
+    console.log('OneSignal API Response headers:', Object.fromEntries(response.headers.entries()));
+
+    const responseText = await response.text();
+    console.log('OneSignal API Response body:', responseText);
+
+    let responseData;
+    try {
+      responseData = JSON.parse(responseText);
+    } catch (parseError) {
+      console.error('Failed to parse OneSignal response as JSON:', responseText);
+      throw new Error(`OneSignal API returned non-JSON response: ${responseText}`);
+    }
+
+    if (!response.ok) {
+      console.error('OneSignal API error details:', {
+        status: response.status,
+        statusText: response.statusText,
+        body: responseData
+      });
+
+      throw new Error(`OneSignal API error: ${response.status} - ${responseData.errors ? responseData.errors.join(', ') : 'Unknown error'}`);
+    }
+
+    console.log('OneSignal notification sent successfully:', responseData);
+    return responseData;
+
   } catch (error) {
-    console.error('OneSignal notification error:', error);
+    console.error('OneSignal notification error details:', {
+      message: error.message,
+      stack: error.stack,
+      notificationData: {
+        title: notificationData.title,
+        targetAll: notificationData.targetAll,
+        targetUsersCount: notificationData.targetUsers?.length || 0
+      }
+    });
     throw error;
   }
 }
@@ -6286,6 +6360,7 @@ app.post('/api/notifications/mark-all-read', async (req, res) => {
 // ==================== ADMIN NOTIFICATION ROUTES ====================
 
 // Send notification (Admin)
+// Send notification (Admin) - IMPROVED VERSION
 app.post('/api/admin/notifications/send',
   authenticateAdmin,
   checkPermission('messages', 'create'),
@@ -6303,6 +6378,16 @@ app.post('/api/admin/notifications/send',
         scheduledFor
       } = req.body;
 
+      console.log('Received notification request:', {
+        title,
+        messageLength: message?.length,
+        type,
+        targetAll,
+        targetUsersCount: targetUsers?.length,
+        scheduledFor
+      });
+
+      // Validation
       if (!title || !message) {
         return res.status(400).json({
           success: false,
@@ -6317,40 +6402,121 @@ app.post('/api/admin/notifications/send',
         });
       }
 
+      if (title.length > 100) {
+        return res.status(400).json({
+          success: false,
+          error: 'Title must be less than 100 characters'
+        });
+      }
+
+      if (message.length > 500) {
+        return res.status(400).json({
+          success: false,
+          error: 'Message must be less than 500 characters'
+        });
+      }
+
       const notificationData = {
-        title,
-        message,
+        title: title.trim(),
+        message: message.trim(),
         type,
-        imageUrl,
-        actionUrl,
-        targetUsers,
+        imageUrl: imageUrl?.trim() || undefined,
+        actionUrl: actionUrl?.trim() || undefined,
+        targetUsers: targetUsers.map(email => email.trim().toLowerCase()),
         targetAll,
         createdBy: req.admin._id,
         scheduledFor: scheduledFor ? new Date(scheduledFor) : null,
-        isSent: !scheduledFor // Mark as sent immediately if not scheduled
+        isSent: !scheduledFor
       };
 
       let notification;
+      let oneSignalResult = null;
 
-      if (scheduledFor) {
-        // Save as scheduled notification
-        notification = await createNotification(notificationData);
-      } else {
-        // Send immediately
-        notification = await sendCombinedNotification(notificationData);
+      // Save to database first
+      notification = await createNotification(notificationData);
+
+      // Send immediately if not scheduled
+      if (!scheduledFor) {
+        try {
+          oneSignalResult = await sendOneSignalNotification(notificationData);
+          notification.sentViaOneSignal = true;
+          notification.oneSignalId = oneSignalResult?.id;
+          await notification.save();
+        } catch (onesignalError) {
+          // Save the error but don't fail the request
+          console.error('OneSignal delivery failed, but notification saved to DB:', onesignalError.message);
+          notification.sentViaOneSignal = false;
+          await notification.save();
+          
+          // Still return success but with a warning
+          return res.json({
+            success: true,
+            message: 'Notification saved but push delivery failed: ' + onesignalError.message,
+            notification,
+            warning: 'Push notification failed to send'
+          });
+        }
       }
 
       res.json({
         success: true,
-        message: scheduledFor ? 'Notification scheduled' : 'Notification sent successfully',
-        notification
+        message: scheduledFor ? 'Notification scheduled successfully' : 'Notification sent successfully',
+        notification,
+        oneSignalResult
       });
+
     } catch (error) {
-      console.error('Error sending notification:', error);
+      console.error('Error in notification send endpoint:', error);
       res.status(500).json({
         success: false,
-        error: 'Failed to send notification',
+        error: 'Failed to process notification',
         details: error.message
+      });
+    }
+  }
+);
+
+// Check OneSignal configuration
+app.get('/api/admin/notifications/configuration',
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      const config = {
+        onesignalAppId: process.env.ONESIGNAL_APP_ID ? 'Configured' : 'Missing',
+        onesignalApiKey: process.env.ONESIGNAL_API_KEY ? 'Configured' : 'Missing',
+        appIdValue: process.env.ONESIGNAL_APP_ID ? 
+          (process.env.ONESIGNAL_APP_ID.includes('your_onesignal') ? 'Using placeholder' : 'Valid') : 'Missing',
+        apiKeyValue: process.env.ONESIGNAL_API_KEY ? 
+          (process.env.ONESIGNAL_API_KEY.includes('your_onesignal') ? 'Using placeholder' : 'Valid') : 'Missing'
+      };
+
+      // Test OneSignal connection if credentials exist
+      if (process.env.ONESIGNAL_APP_ID && process.env.ONESIGNAL_API_KEY && 
+          !process.env.ONESIGNAL_APP_ID.includes('your_onesignal') && 
+          !process.env.ONESIGNAL_API_KEY.includes('your_onesignal')) {
+        
+        try {
+          const testResponse = await fetch('https://onesignal.com/api/v1/players?app_id=' + process.env.ONESIGNAL_APP_ID, {
+            headers: {
+              'Authorization': `Basic ${process.env.ONESIGNAL_API_KEY}`
+            }
+          });
+          
+          config.connectionTest = testResponse.status === 200 ? 'Success' : `Failed: ${testResponse.status}`;
+        } catch (testError) {
+          config.connectionTest = `Error: ${testError.message}`;
+        }
+      }
+
+      res.json({
+        success: true,
+        configuration: config
+      });
+    } catch (error) {
+      console.error('Error checking configuration:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to check configuration'
       });
     }
   }
@@ -7294,6 +7460,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
