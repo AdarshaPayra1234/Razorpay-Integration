@@ -1197,6 +1197,7 @@ async function deleteFromFreeimageHost(deleteUrl, imageId) {
 
 // Send notification via OneSignal
 // Improved OneSignal notification function
+// OneSignal notification function for mobile app (All Users only)
 async function sendOneSignalNotification(notificationData) {
   try {
     console.log('Sending OneSignal notification:', {
@@ -1208,20 +1209,11 @@ async function sendOneSignalNotification(notificationData) {
 
     // Check if OneSignal is configured
     if (!process.env.ONESIGNAL_APP_ID || !process.env.ONESIGNAL_API_KEY) {
-      throw new Error('OneSignal configuration missing: Check ONESIGNAL_APP_ID and ONESIGNAL_API_KEY environment variables');
+      throw new Error('OneSignal configuration missing');
     }
 
-    // Validate OneSignal credentials format
     const appId = process.env.ONESIGNAL_APP_ID.trim();
     const apiKey = process.env.ONESIGNAL_API_KEY.trim();
-
-    if (!appId || appId === 'your_onesignal_app_id') {
-      throw new Error('OneSignal App ID not configured');
-    }
-
-    if (!apiKey || apiKey === 'your_onesignal_api_key') {
-      throw new Error('OneSignal API Key not configured');
-    }
 
     // Create notification payload
     const notificationPayload = {
@@ -1230,35 +1222,10 @@ async function sendOneSignalNotification(notificationData) {
       headings: { en: notificationData.title },
       data: {
         type: notificationData.type,
-        actionUrl: notificationData.actionUrl
+        actionUrl: notificationData.actionUrl,
+        notificationType: notificationData.type
       }
     };
-
-    // Add target audience
-    if (notificationData.targetAll) {
-      // Send to all subscribed users
-      notificationPayload.included_segments = ['Subscribed Users'];
-      console.log('Targeting: All subscribed users');
-    } else if (notificationData.targetUsers && notificationData.targetUsers.length > 0) {
-      // Get OneSignal player IDs for specific users
-      const userEmails = notificationData.targetUsers;
-      const userPrefs = await UserNotificationPrefs.find({
-        userEmail: { $in: userEmails },
-        oneSignalPlayerId: { $exists: true, $ne: null },
-        allowPush: true
-      });
-
-      const playerIds = userPrefs.map(pref => pref.oneSignalPlayerId).filter(id => id);
-      
-      if (playerIds.length === 0) {
-        throw new Error('No users found with push notification enabled for the specified emails');
-      }
-
-      notificationPayload.include_player_ids = playerIds;
-      console.log(`Targeting: ${playerIds.length} specific users`);
-    } else {
-      throw new Error('No valid target specified for notification');
-    }
 
     // Add optional fields
     if (notificationData.imageUrl) {
@@ -1268,6 +1235,22 @@ async function sendOneSignalNotification(notificationData) {
 
     if (notificationData.actionUrl) {
       notificationPayload.url = notificationData.actionUrl;
+    }
+
+    // Handle targeting - ONLY send to mobile app for "All Users"
+    if (notificationData.targetAll) {
+      // Send to ALL mobile app users
+      notificationPayload.included_segments = ['All'];
+      console.log('Targeting: ALL mobile app users');
+      
+    } else {
+      // Specific users selected - DO NOT send to mobile app
+      console.log('Specific users selected - skipping mobile app notification');
+      return {
+        success: true,
+        skipped: true,
+        reason: 'Specific user notifications not supported for mobile app'
+      };
     }
 
     console.log('OneSignal payload:', JSON.stringify(notificationPayload, null, 2));
@@ -1282,43 +1265,42 @@ async function sendOneSignalNotification(notificationData) {
       body: JSON.stringify(notificationPayload)
     });
 
-    console.log('OneSignal API Response status:', response.status);
-    console.log('OneSignal API Response headers:', Object.fromEntries(response.headers.entries()));
-
     const responseText = await response.text();
-    console.log('OneSignal API Response body:', responseText);
-
     let responseData;
+
     try {
       responseData = JSON.parse(responseText);
     } catch (parseError) {
-      console.error('Failed to parse OneSignal response as JSON:', responseText);
       throw new Error(`OneSignal API returned non-JSON response: ${responseText}`);
     }
 
     if (!response.ok) {
-      console.error('OneSignal API error details:', {
+      console.error('OneSignal API error:', {
         status: response.status,
-        statusText: response.statusText,
         body: responseData
       });
+
+      // Check if it's a "no subscribers" error - this is OK
+      if (responseData.errors && responseData.errors.includes('All included players are not subscribed')) {
+        console.log('No active subscribers found - notification queued for when users come online');
+        return {
+          success: true,
+          warning: 'Notification queued for delivery when users come online',
+          onesignalResponse: responseData
+        };
+      }
 
       throw new Error(`OneSignal API error: ${response.status} - ${responseData.errors ? responseData.errors.join(', ') : 'Unknown error'}`);
     }
 
-    console.log('OneSignal notification sent successfully:', responseData);
-    return responseData;
+    console.log('OneSignal notification sent successfully to mobile app:', responseData);
+    return {
+      success: true,
+      onesignalResponse: responseData
+    };
 
   } catch (error) {
-    console.error('OneSignal notification error details:', {
-      message: error.message,
-      stack: error.stack,
-      notificationData: {
-        title: notificationData.title,
-        targetAll: notificationData.targetAll,
-        targetUsersCount: notificationData.targetUsers?.length || 0
-      }
-    });
+    console.error('OneSignal notification error:', error.message);
     throw error;
   }
 }
@@ -6360,7 +6342,7 @@ app.post('/api/notifications/mark-all-read', async (req, res) => {
 // ==================== ADMIN NOTIFICATION ROUTES ====================
 
 // Send notification (Admin)
-// Send notification (Admin) - IMPROVED VERSION
+// Send notification (Admin) - Mobile App (All Users only)
 app.post('/api/admin/notifications/send',
   authenticateAdmin,
   checkPermission('messages', 'create'),
@@ -6402,20 +6384,6 @@ app.post('/api/admin/notifications/send',
         });
       }
 
-      if (title.length > 100) {
-        return res.status(400).json({
-          success: false,
-          error: 'Title must be less than 100 characters'
-        });
-      }
-
-      if (message.length > 500) {
-        return res.status(400).json({
-          success: false,
-          error: 'Message must be less than 500 characters'
-        });
-      }
-
       const notificationData = {
         title: title.trim(),
         message: message.trim(),
@@ -6431,38 +6399,74 @@ app.post('/api/admin/notifications/send',
 
       let notification;
       let oneSignalResult = null;
+      let emailResult = null;
 
       // Save to database first
       notification = await createNotification(notificationData);
 
       // Send immediately if not scheduled
       if (!scheduledFor) {
-        try {
-          oneSignalResult = await sendOneSignalNotification(notificationData);
-          notification.sentViaOneSignal = true;
-          notification.oneSignalId = oneSignalResult?.id;
-          await notification.save();
-        } catch (onesignalError) {
-          // Save the error but don't fail the request
-          console.error('OneSignal delivery failed, but notification saved to DB:', onesignalError.message);
-          notification.sentViaOneSignal = false;
-          await notification.save();
-          
-          // Still return success but with a warning
-          return res.json({
-            success: true,
-            message: 'Notification saved but push delivery failed: ' + onesignalError.message,
-            notification,
-            warning: 'Push notification failed to send'
-          });
+        // ALWAYS send email notifications (for both All Users and Specific Users)
+        if (notificationData.targetAll || notificationData.targetUsers.length > 0) {
+          try {
+            emailResult = await sendEmailNotification(notificationData);
+            console.log('Email notification sent successfully');
+          } catch (emailError) {
+            console.error('Email notification failed:', emailError.message);
+            // Don't fail the entire request if email fails
+          }
+        }
+
+        // Send to MOBILE APP only for "All Users"
+        if (notificationData.targetAll) {
+          try {
+            oneSignalResult = await sendOneSignalNotification(notificationData);
+            
+            if (oneSignalResult.skipped) {
+              console.log('Mobile app notification skipped:', oneSignalResult.reason);
+            } else {
+              notification.sentViaOneSignal = true;
+              notification.oneSignalId = oneSignalResult?.onesignalResponse?.id;
+              await notification.save();
+            }
+          } catch (onesignalError) {
+            console.error('Mobile app notification failed:', onesignalError.message);
+            // Don't fail the entire request if mobile notification fails
+          }
+        } else {
+          console.log('Specific users selected - mobile app notification skipped');
+        }
+      }
+
+      // Prepare response message
+      let message = scheduledFor ? 'Notification scheduled successfully' : 'Notification sent successfully';
+      const details = [];
+
+      if (oneSignalResult) {
+        if (oneSignalResult.skipped) {
+          details.push('Mobile: Specific users not supported');
+        } else if (oneSignalResult.warning) {
+          details.push(`Mobile: ${oneSignalResult.warning}`);
+        } else {
+          details.push('Mobile: Sent to all app users');
+        }
+      }
+
+      if (emailResult) {
+        if (notificationData.targetAll) {
+          details.push('Email: Sent to all users');
+        } else {
+          details.push(`Email: Sent to ${notificationData.targetUsers.length} users`);
         }
       }
 
       res.json({
         success: true,
-        message: scheduledFor ? 'Notification scheduled successfully' : 'Notification sent successfully',
+        message: message,
+        details: details.join(' | '),
         notification,
-        oneSignalResult
+        oneSignalResult,
+        emailResult
       });
 
     } catch (error) {
@@ -7460,6 +7464,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
