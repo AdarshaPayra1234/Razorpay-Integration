@@ -789,6 +789,8 @@ const limitedViewerPermissions = {
 // Admin Authentication Middleware
 // ==================== MIDDLEWARE ====================
 
+
+
 // Admin Authentication Middleware - UPDATED VERSION
 // ==================== ENHANCED RBAC MIDDLEWARE ====================
 
@@ -912,6 +914,126 @@ const authenticateAdmin = async (req, res, next) => {
     });
   }
 };
+
+// ==================== MONITORING MIDDLEWARE ====================
+
+// Request counting middleware
+app.use((req, res, next) => {
+  // Initialize counters if they don't exist
+  if (!req.app.get('requestCount')) {
+    req.app.set('requestCount', 0);
+    req.app.set('getRequests', 0);
+    req.app.set('postRequests', 0);
+    req.app.set('putRequests', 0);
+    req.app.set('deleteRequests', 0);
+    req.app.set('patchRequests', 0);
+    req.app.set('totalErrors', 0);
+    req.app.set('recentErrors', []);
+    req.app.set('endpointCounts', {});
+    req.app.set('responseTimes', []);
+    req.app.set('recentLogs', []);
+    req.app.set('sleepCycles', 0);
+    req.app.set('lastWakeUp', new Date().toISOString());
+  }
+
+  // Count request by method
+  req.app.set('requestCount', req.app.get('requestCount') + 1);
+  
+  const method = req.method.toUpperCase();
+  if (req.app.get(method.toLowerCase() + 'Requests') !== undefined) {
+    req.app.set(method.toLowerCase() + 'Requests', 
+      req.app.get(method.toLowerCase() + 'Requests') + 1);
+  }
+
+  // Count endpoint usage
+  const endpoint = req.path;
+  const endpointCounts = req.app.get('endpointCounts') || {};
+  endpointCounts[endpoint] = (endpointCounts[endpoint] || 0) + 1;
+  req.app.set('endpointCounts', endpointCounts);
+
+  // Measure response time
+  const start = Date.now();
+  
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const responseTimes = req.app.get('responseTimes') || [];
+    responseTimes.push(duration);
+    
+    // Keep only last 1000 response times
+    if (responseTimes.length > 1000) {
+      responseTimes.shift();
+    }
+    
+    req.app.set('responseTimes', responseTimes);
+    
+    // Calculate averages
+    if (responseTimes.length > 0) {
+      const avg = responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length;
+      const max = Math.max(...responseTimes);
+      const min = Math.min(...responseTimes);
+      
+      req.app.set('avgResponseTime', Math.round(avg));
+      req.app.set('maxResponseTime', max);
+      req.app.set('minResponseTime', min);
+    }
+    
+    // Log the request
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      method: req.method,
+      endpoint: req.path,
+      statusCode: res.statusCode,
+      duration: duration + 'ms',
+      ip: req.ip,
+      userAgent: req.get('User-Agent')?.substring(0, 100)
+    };
+    
+    const recentLogs = req.app.get('recentLogs') || [];
+    recentLogs.push(logEntry);
+    
+    // Keep only last 1000 logs
+    if (recentLogs.length > 1000) {
+      recentLogs.shift();
+    }
+    
+    req.app.set('recentLogs', recentLogs);
+  });
+
+  next();
+});
+
+// Error tracking middleware
+app.use((err, req, res, next) => {
+  // Count errors
+  req.app.set('totalErrors', (req.app.get('totalErrors') || 0) + 1);
+  
+  // Store recent errors
+  const recentErrors = req.app.get('recentErrors') || [];
+  const errorEntry = {
+    timestamp: new Date().toISOString(),
+    message: err.message,
+    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
+    endpoint: req.path,
+    method: req.method
+  };
+  
+  recentErrors.push(errorEntry);
+  if (recentErrors.length > 100) {
+    recentErrors.shift();
+  }
+  req.app.set('recentErrors', recentErrors);
+  
+  next(err);
+});
+
+// Wake-up detection middleware
+app.use((req, res, next) => {
+  if (req.path === '/api/wake-up' || req.path === '/api/keep-alive') {
+    req.app.set('lastWakeUp', new Date().toISOString());
+    req.app.set('sleepCycles', (req.app.get('sleepCycles') || 0) + 1);
+  }
+  next();
+});
 
 // Audit Logging Middleware
 const auditLog = (action, resource, getResourceId = null) => {
@@ -5399,6 +5521,658 @@ app.delete('/api/admin/messages/:id', authenticateAdmin, async (req, res) => {
   }
 });
 
+// ==================== SERVER MONITORING ROUTES ====================
+
+// Server Health & Performance Dashboard
+app.get('/api/admin/server/health', authenticateAdmin, async (req, res) => {
+  try {
+    const healthData = {
+      // Basic server info
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      nodeVersion: process.version,
+      environment: process.env.NODE_ENV,
+      
+      // Memory usage
+      memory: {
+        rss: Math.round(process.memoryUsage().rss / 1024 / 1024) + ' MB',
+        heapTotal: Math.round(process.memoryUsage().heapTotal / 1024 / 1024) + ' MB',
+        heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + ' MB',
+        external: Math.round(process.memoryUsage().external / 1024 / 1024) + ' MB',
+        arrayBuffers: Math.round(process.memoryUsage().arrayBuffers / 1024 / 1024) + ' MB'
+      },
+      
+      // CPU usage
+      cpu: {
+        usage: process.cpuUsage(),
+        architecture: process.arch,
+        platform: process.platform
+      },
+      
+      // Process info
+      process: {
+        pid: process.pid,
+        title: process.title,
+        cwd: process.cwd()
+      },
+      
+      // Database connections
+      database: {
+        state: mongoose.connection.readyState,
+        host: mongoose.connection.host,
+        name: mongoose.connection.name,
+        models: Object.keys(mongoose.connection.models)
+      },
+      
+      // Request statistics
+      requests: {
+        totalRequests: req.app.get('requestCount') || 0,
+        activeSessions: Object.keys(req.sessionStore.sessions || {}).length
+      }
+    };
+
+    res.json({
+      success: true,
+      health: healthData,
+      status: 'healthy'
+    });
+  } catch (err) {
+    console.error('Server health check error:', err);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Health check failed',
+      status: 'unhealthy'
+    });
+  }
+});
+
+// Server Performance Metrics
+app.get('/api/admin/server/performance', authenticateAdmin, async (req, res) => {
+  try {
+    const performanceData = {
+      // Memory usage over time
+      memoryUsage: {
+        used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+        total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+        utilization: Math.round((process.memoryUsage().heapUsed / process.memoryUsage().heapTotal) * 100)
+      },
+      
+      // Event loop latency
+      eventLoop: {
+        latency: await getEventLoopLatency(),
+        delay: 'normal' // You can implement actual measurement
+      },
+      
+      // Garbage collection stats (if available)
+      gc: process.memoryUsage().external ? 'active' : 'normal',
+      
+      // Database performance
+      database: {
+        collections: await mongoose.connection.db.listCollections().toArray().length,
+        operations: mongoose.connection.db.stats().then(stats => stats.opcounters).catch(() => 'unavailable')
+      },
+      
+      // Active connections
+      connections: {
+        database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+        sessions: req.sessionStore ? 'active' : 'inactive'
+      }
+    };
+
+    res.json({
+      success: true,
+      performance: performanceData
+    });
+  } catch (err) {
+    console.error('Performance metrics error:', err);
+    res.status(500).json({ error: 'Failed to get performance metrics' });
+  }
+});
+
+// Helper function to measure event loop latency
+async function getEventLoopLatency() {
+  return new Promise((resolve) => {
+    const start = process.hrtime();
+    setImmediate(() => {
+      const diff = process.hrtime(start);
+      const latency = (diff[0] * 1e9 + diff[1]) / 1e6; // Convert to milliseconds
+      resolve(latency.toFixed(2) + 'ms');
+    });
+  });
+}
+
+// Server Uptime & Availability Tracking
+app.get('/api/admin/server/uptime', authenticateAdmin, async (req, res) => {
+  try {
+    const uptimeData = {
+      // Process uptime
+      processUptime: {
+        seconds: process.uptime(),
+        formatted: formatUptime(process.uptime()),
+        startTime: new Date(Date.now() - (process.uptime() * 1000))
+      },
+      
+      // Database connection uptime
+      databaseUptime: {
+        connectedSince: mongoose.connection._hasOpened ? 
+          new Date(mongoose.connection._hasOpened) : 'Unknown',
+        state: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected'
+      },
+      
+      // System load (simulated for Render free tier)
+      systemLoad: {
+        status: 'normal', // You can implement actual load calculation
+        recommendations: getLoadRecommendations()
+      }
+    };
+
+    res.json({
+      success: true,
+      uptime: uptimeData
+    });
+  } catch (err) {
+    console.error('Uptime tracking error:', err);
+    res.status(500).json({ error: 'Failed to get uptime data' });
+  }
+});
+
+// Helper function to format uptime
+function formatUptime(seconds) {
+  const days = Math.floor(seconds / (24 * 60 * 60));
+  const hours = Math.floor((seconds % (24 * 60 * 60)) / (60 * 60));
+  const minutes = Math.floor((seconds % (60 * 60)) / 60);
+  const secs = Math.floor(seconds % 60);
+  
+  return `${days}d ${hours}h ${minutes}m ${secs}s`;
+}
+
+// Helper function for load recommendations
+function getLoadRecommendations() {
+  const memoryUsage = process.memoryUsage();
+  const memoryUtilization = (memoryUsage.heapUsed / memoryUsage.heapTotal) * 100;
+  
+  if (memoryUtilization > 80) {
+    return ['High memory usage detected', 'Consider optimizing memory usage', 'Check for memory leaks'];
+  } else if (memoryUtilization > 60) {
+    return ['Moderate memory usage', 'Monitor memory trends'];
+  } else {
+    return ['Memory usage is normal', 'Server running efficiently'];
+  }
+}
+
+// Request Statistics & Analytics
+app.get('/api/admin/server/requests', authenticateAdmin, async (req, res) => {
+  try {
+    const requestStats = {
+      // Request counts by method
+      methods: {
+        GET: req.app.get('getRequests') || 0,
+        POST: req.app.get('postRequests') || 0,
+        PUT: req.app.get('putRequests') || 0,
+        DELETE: req.app.get('deleteRequests') || 0,
+        PATCH: req.app.get('patchRequests') || 0
+      },
+      
+      // Response time statistics
+      responseTimes: {
+        average: req.app.get('avgResponseTime') || 0,
+        max: req.app.get('maxResponseTime') || 0,
+        min: req.app.get('minResponseTime') || 0
+      },
+      
+      // Error rates
+      errors: {
+        totalErrors: req.app.get('totalErrors') || 0,
+        errorRate: calculateErrorRate(req.app.get('totalRequests') || 0, req.app.get('totalErrors') || 0),
+        recentErrors: req.app.get('recentErrors') || []
+      },
+      
+      // Endpoint popularity
+      popularEndpoints: req.app.get('endpointCounts') || {},
+      
+      // Rate limiting stats
+      rateLimiting: {
+        blockedRequests: req.app.get('blockedRequests') || 0,
+        currentBlacklistedIPs: Array.from(blacklistedIPs).length
+      }
+    };
+
+    res.json({
+      success: true,
+      requests: requestStats
+    });
+  } catch (err) {
+    console.error('Request statistics error:', err);
+    res.status(500).json({ error: 'Failed to get request statistics' });
+  }
+});
+
+// Helper function to calculate error rate
+function calculateErrorRate(totalRequests, totalErrors) {
+  if (totalRequests === 0) return '0%';
+  return ((totalErrors / totalRequests) * 100).toFixed(2) + '%';
+}
+
+// Database Performance Metrics
+app.get('/api/admin/server/database', authenticateAdmin, async (req, res) => {
+  try {
+    const db = mongoose.connection.db;
+    const adminDb = db.admin();
+    
+    const dbStats = await db.stats();
+    const serverStatus = await adminDb.serverStatus();
+    
+    const databaseMetrics = {
+      // Connection info
+      connection: {
+        host: mongoose.connection.host,
+        port: mongoose.connection.port,
+        name: mongoose.connection.name,
+        readyState: mongoose.connection.readyState,
+        collections: Object.keys(mongoose.connection.collections).length
+      },
+      
+      // Database statistics
+      statistics: {
+        collections: dbStats.collections,
+        objects: dbStats.objects,
+        avgObjSize: Math.round(dbStats.avgObjSize),
+        dataSize: Math.round(dbStats.dataSize / 1024 / 1024) + ' MB',
+        storageSize: Math.round(dbStats.storageSize / 1024 / 1024) + ' MB',
+        indexSize: Math.round(dbStats.indexSize / 1024 / 1024) + ' MB'
+      },
+      
+      // Operation counters
+      operations: dbStats.opcounters || {},
+      
+      // Memory usage
+      memory: serverStatus.mem ? {
+        resident: Math.round(serverStatus.mem.resident / 1024) + ' MB',
+        virtual: Math.round(serverStatus.mem.virtual / 1024) + ' MB',
+        mapped: Math.round(serverStatus.mem.mapped / 1024) + ' MB'
+      } : 'unavailable',
+      
+      // Network activity
+      network: serverStatus.network || {}
+    };
+
+    res.json({
+      success: true,
+      database: databaseMetrics
+    });
+  } catch (err) {
+    console.error('Database metrics error:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to get database metrics',
+      details: err.message 
+    });
+  }
+});
+
+// Render Free Tier Specific Monitoring
+app.get('/api/admin/server/render-status', authenticateAdmin, async (req, res) => {
+  try {
+    const renderStatus = {
+      // Free tier limitations
+      limitations: {
+        maxUptime: '750 hours/month',
+        sleepTime: 'After 15 minutes of inactivity',
+        memory: '512 MB RAM',
+        cpu: 'Shared CPU resources',
+        bandwidth: 'Unlimited (fair use)'
+      },
+      
+      // Current usage estimates
+      usage: {
+        monthlyUptime: calculateMonthlyUptime(),
+        estimatedRemainingHours: calculateRemainingHours(),
+        sleepCycles: req.app.get('sleepCycles') || 0,
+        lastWakeUp: req.app.get('lastWakeUp') || 'Never'
+      },
+      
+      // Performance on free tier
+      performance: {
+        status: 'Active',
+        recommendations: getRenderRecommendations(),
+        wakeUpTime: req.app.get('lastWakeUpTime') || 'Unknown'
+      }
+    };
+
+    res.json({
+      success: true,
+      render: renderStatus
+    });
+  } catch (err) {
+    console.error('Render status error:', err);
+    res.status(500).json({ error: 'Failed to get Render status' });
+  }
+});
+
+// Helper functions for Render monitoring
+function calculateMonthlyUptime() {
+  const uptimeSeconds = process.uptime();
+  const uptimeHours = uptimeSeconds / 3600;
+  return Math.min(uptimeHours, 750).toFixed(2) + ' hours';
+}
+
+function calculateRemainingHours() {
+  const uptimeSeconds = process.uptime();
+  const uptimeHours = uptimeSeconds / 3600;
+  const remaining = 750 - uptimeHours;
+  return Math.max(0, remaining).toFixed(2) + ' hours';
+}
+
+function getRenderRecommendations() {
+  const recommendations = [];
+  
+  if (process.memoryUsage().heapUsed > 400 * 1024 * 1024) { // 400MB
+    recommendations.push('High memory usage - optimize for free tier');
+  }
+  
+  if (process.uptime() > 700 * 3600) { // 700 hours
+    recommendations.push('Approaching monthly limit - monitor usage');
+  }
+  
+  if (recommendations.length === 0) {
+    recommendations.push('Server running efficiently on free tier');
+  }
+  
+  return recommendations;
+}
+
+// Real-time Server Logs (Last 100 lines)
+app.get('/api/admin/server/logs', authenticateAdmin, async (req, res) => {
+  try {
+    const { lines = 100, type = 'all' } = req.query;
+    
+    // In a real implementation, you'd read from your log files
+    // For now, we'll return recent console logs stored in memory
+    const recentLogs = req.app.get('recentLogs') || [];
+    
+    let filteredLogs = recentLogs;
+    if (type !== 'all') {
+      filteredLogs = recentLogs.filter(log => 
+        log.type === type || log.message.includes(type)
+      );
+    }
+    
+    const limitedLogs = filteredLogs.slice(-parseInt(lines));
+    
+    res.json({
+      success: true,
+      logs: limitedLogs,
+      total: recentLogs.length,
+      filtered: filteredLogs.length
+    });
+  } catch (err) {
+    console.error('Log retrieval error:', err);
+    res.status(500).json({ error: 'Failed to retrieve logs' });
+  }
+});
+
+// Server Configuration Overview
+app.get('/api/admin/server/config', authenticateAdmin, async (req, res) => {
+  try {
+    const config = {
+      // Environment variables (masked for security)
+      environment: {
+        NODE_ENV: process.env.NODE_ENV,
+        PORT: process.env.PORT,
+        RP_ID: process.env.RP_ID ? 'Configured' : 'Not set',
+        RAZORPAY_KEY_ID: process.env.RAZORPAY_KEY_ID ? 'Configured' : 'Not set',
+        ONESIGNAL_APP_ID: process.env.ONESIGNAL_APP_ID ? 'Configured' : 'Not set',
+        MONGODB_URI: process.env.MONGODB_URI ? 'Configured' : 'Not set'
+      },
+      
+      // Server settings
+      server: {
+        trustProxy: app.get('trust proxy'),
+        corsEnabled: true,
+        rateLimiting: true,
+        sessionStorage: 'MongoDB'
+      },
+      
+      // Feature flags
+      features: {
+        webauthn: true,
+        notifications: !!process.env.ONESIGNAL_APP_ID,
+        payments: !!process.env.RAZORPAY_KEY_ID,
+        email: !!process.env.EMAIL_USER,
+        fileUpload: true
+      },
+      
+      // Security settings
+      security: {
+        jwtEnabled: true,
+        bcryptRounds: 10,
+        sessionTimeout: '24 hours',
+        rateLimitWindow: '15 minutes'
+      }
+    };
+
+    res.json({
+      success: true,
+      config: config
+    });
+  } catch (err) {
+    console.error('Config retrieval error:', err);
+    res.status(500).json({ error: 'Failed to retrieve server config' });
+  }
+});
+
+// ==================== COMPREHENSIVE SERVER DASHBOARD ====================
+
+app.get('/api/admin/server/dashboard', authenticateAdmin, async (req, res) => {
+  try {
+    // Collect all server data
+    const serverData = {
+      // Basic health
+      health: await getHealthData(),
+      
+      // Performance metrics
+      performance: await getPerformanceData(),
+      
+      // Request statistics
+      requests: await getRequestData(req),
+      
+      // Database status
+      database: await getDatabaseData(),
+      
+      // Render free tier status
+      render: await getRenderData(req),
+      
+      // System recommendations
+      recommendations: await getSystemRecommendations(),
+      
+      // Recent activity
+      activity: await getRecentActivity(req)
+    };
+
+    res.json({
+      success: true,
+      dashboard: serverData,
+      lastUpdated: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('Dashboard error:', err);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to generate dashboard',
+      details: err.message 
+    });
+  }
+});
+
+// Helper functions for dashboard
+async function getHealthData() {
+  return {
+    status: 'healthy',
+    uptime: formatUptime(process.uptime()),
+    memory: Math.round(process.memoryUsage().rss / 1024 / 1024) + ' MB',
+    nodeVersion: process.version,
+    environment: process.env.NODE_ENV
+  };
+}
+
+async function getPerformanceData() {
+  const memoryUsage = process.memoryUsage();
+  const memoryUtilization = (memoryUsage.heapUsed / memoryUsage.heapTotal) * 100;
+  
+  return {
+    memoryUtilization: Math.round(memoryUtilization) + '%',
+    eventLoopLatency: await getEventLoopLatency(),
+    activeHandles: process._getActiveHandles?.().length || 'unknown',
+    activeRequests: process._getActiveRequests?.().length || 'unknown'
+  };
+}
+
+async function getRequestData(req) {
+  return {
+    totalRequests: req.app.get('requestCount') || 0,
+    errorRate: calculateErrorRate(req.app.get('requestCount') || 0, req.app.get('totalErrors') || 0),
+    avgResponseTime: req.app.get('avgResponseTime') || 0,
+    activeSessions: Object.keys(req.sessionStore.sessions || {}).length
+  };
+}
+
+async function getDatabaseData() {
+  try {
+    const dbStats = await mongoose.connection.db.stats();
+    return {
+      status: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+      collections: dbStats.collections,
+      documents: dbStats.objects,
+      storage: Math.round(dbStats.storageSize / 1024 / 1024) + ' MB'
+    };
+  } catch (err) {
+    return { status: 'error', error: err.message };
+  }
+}
+
+async function getRenderData(req) {
+  const uptimeHours = process.uptime() / 3600;
+  const remainingHours = Math.max(0, 750 - uptimeHours);
+  
+  return {
+    monthlyUsage: uptimeHours.toFixed(2) + ' hours',
+    remaining: remainingHours.toFixed(2) + ' hours',
+    sleepCycles: req.app.get('sleepCycles') || 0,
+    lastWakeUp: req.app.get('lastWakeUp') || 'Never'
+  };
+}
+
+async function getSystemRecommendations() {
+  const recommendations = [];
+  const memoryUsage = process.memoryUsage();
+  const memoryUtilization = (memoryUsage.heapUsed / memoryUsage.heapTotal) * 100;
+  
+  if (memoryUtilization > 80) {
+    recommendations.push({
+      level: 'high',
+      message: 'High memory usage detected',
+      action: 'Check for memory leaks and optimize database queries'
+    });
+  }
+  
+  if (process.uptime() > 700 * 3600) {
+    recommendations.push({
+      level: 'medium',
+      message: 'Approaching Render free tier monthly limit',
+      action: 'Monitor usage and consider upgrading if needed'
+    });
+  }
+  
+  if (recommendations.length === 0) {
+    recommendations.push({
+      level: 'low',
+      message: 'System running efficiently',
+      action: 'Continue current maintenance schedule'
+    });
+  }
+  
+  return recommendations;
+}
+
+async function getRecentActivity(req) {
+  const recentLogs = req.app.get('recentLogs') || [];
+  return {
+    lastRequests: recentLogs.slice(-10).reverse(),
+    totalLogs: recentLogs.length,
+    errorCount: req.app.get('totalErrors') || 0
+  };
+}
+
+// ==================== SERVER ALERTS SYSTEM ====================
+
+// Check for critical server issues
+app.get('/api/admin/server/alerts', authenticateAdmin, async (req, res) => {
+  try {
+    const alerts = [];
+    
+    // Memory alert
+    const memoryUsage = process.memoryUsage();
+    const memoryUtilization = (memoryUsage.heapUsed / memoryUsage.heapTotal) * 100;
+    if (memoryUtilization > 85) {
+      alerts.push({
+        type: 'CRITICAL',
+        title: 'High Memory Usage',
+        message: `Memory utilization at ${Math.round(memoryUtilization)}%`,
+        timestamp: new Date().toISOString(),
+        action: 'Restart server or optimize memory usage'
+      });
+    }
+    
+    // Uptime alert for Render free tier
+    const uptimeHours = process.uptime() / 3600;
+    if (uptimeHours > 740) { // 740 hours (close to 750 limit)
+      alerts.push({
+        type: 'WARNING',
+        title: 'Approaching Monthly Limit',
+        message: `Server has been up for ${uptimeHours.toFixed(2)} hours this month`,
+        timestamp: new Date().toISOString(),
+        action: 'Monitor usage and consider service restart'
+      });
+    }
+    
+    // Database connection alert
+    if (mongoose.connection.readyState !== 1) {
+      alerts.push({
+        type: 'CRITICAL',
+        title: 'Database Disconnected',
+        message: 'MongoDB connection is not active',
+        timestamp: new Date().toISOString(),
+        action: 'Check database connection and credentials'
+      });
+    }
+    
+    // High error rate alert
+    const totalRequests = req.app.get('requestCount') || 0;
+    const totalErrors = req.app.get('totalErrors') || 0;
+    const errorRate = totalRequests > 0 ? (totalErrors / totalRequests) * 100 : 0;
+    
+    if (errorRate > 10) { // 10% error rate
+      alerts.push({
+        type: 'WARNING',
+        title: 'High Error Rate',
+        message: `Error rate is ${errorRate.toFixed(2)}%`,
+        timestamp: new Date().toISOString(),
+        action: 'Check recent errors and application logs'
+      });
+    }
+
+    res.json({
+      success: true,
+      alerts: alerts,
+      criticalCount: alerts.filter(alert => alert.type === 'CRITICAL').length,
+      warningCount: alerts.filter(alert => alert.type === 'WARNING').length
+    });
+  } catch (err) {
+    console.error('Alerts error:', err);
+    res.status(500).json({ error: 'Failed to check server alerts' });
+  }
+});
+
 // ===== INBOX ROUTES ===== //
 
 // IMAP Email Fetching
@@ -7764,6 +8538,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
