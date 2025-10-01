@@ -1197,6 +1197,308 @@ async function deleteFromFreeimageHost(deleteUrl, imageId) {
 
 // Send notification via OneSignal
 // OneSignal notification function - Use "All" segment instead of "Subscribed Users"
+// ==================== NOTIFICATION HELPER FUNCTIONS ====================
+
+// Create notification in database
+async function createNotification(notificationData) {
+  try {
+    const notification = new Notification({
+      title: notificationData.title,
+      message: notificationData.message,
+      type: notificationData.type,
+      imageUrl: notificationData.imageUrl,
+      actionUrl: notificationData.actionUrl,
+      targetUsers: notificationData.targetUsers,
+      targetAll: notificationData.targetAll,
+      createdBy: notificationData.createdBy,
+      scheduledFor: notificationData.scheduledFor,
+      isSent: notificationData.isSent
+    });
+
+    await notification.save();
+    console.log('Notification saved to database with ID:', notification._id);
+    return notification;
+  } catch (error) {
+    console.error('Error creating notification in database:', error);
+    throw error;
+  }
+}
+
+// OneSignal notification function
+async function sendOneSignalNotification(notificationData) {
+  try {
+    console.log('Sending OneSignal notification to mobile app users');
+
+    // Check if OneSignal is configured
+    if (!process.env.ONESIGNAL_APP_ID || !process.env.ONESIGNAL_API_KEY) {
+      throw new Error('OneSignal configuration missing');
+    }
+
+    const appId = process.env.ONESIGNAL_APP_ID.trim();
+    const apiKey = process.env.ONESIGNAL_API_KEY.trim();
+
+    // Create notification payload
+    const notificationPayload = {
+      app_id: appId,
+      contents: { en: notificationData.message },
+      headings: { en: notificationData.title },
+      data: {
+        type: notificationData.type,
+        actionUrl: notificationData.actionUrl,
+        notificationType: notificationData.type
+      },
+      // Use "All" segment to send to all users
+      included_segments: ['All']
+    };
+
+    // Add optional fields
+    if (notificationData.imageUrl) {
+      notificationPayload.big_picture = notificationData.imageUrl;
+      notificationPayload.large_icon = notificationData.imageUrl;
+    }
+
+    if (notificationData.actionUrl) {
+      notificationPayload.url = notificationData.actionUrl;
+    }
+
+    console.log('OneSignal payload:', JSON.stringify(notificationPayload, null, 2));
+
+    // Send to OneSignal
+    const response = await fetch('https://onesignal.com/api/v1/notifications', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Basic ${apiKey}`
+      },
+      body: JSON.stringify(notificationPayload)
+    });
+
+    const responseText = await response.text();
+    let responseData;
+
+    try {
+      responseData = JSON.parse(responseText);
+    } catch (parseError) {
+      throw new Error(`OneSignal API returned non-JSON response: ${responseText}`);
+    }
+
+    if (!response.ok) {
+      console.error('OneSignal API error:', {
+        status: response.status,
+        body: responseData
+      });
+
+      throw new Error(`OneSignal API error: ${response.status} - ${responseData.errors ? responseData.errors.join(', ') : 'Unknown error'}`);
+    }
+
+    // Handle response with warnings
+    if (responseData.errors && responseData.errors.length > 0) {
+      console.log('OneSignal warnings:', responseData.errors);
+      
+      return {
+        success: true,
+        warning: `Notification processed with warnings: ${responseData.errors.join(', ')}`,
+        onesignalResponse: responseData
+      };
+    }
+
+    console.log('OneSignal notification sent successfully:', responseData);
+    return {
+      success: true,
+      onesignalResponse: responseData
+    };
+
+  } catch (error) {
+    console.error('OneSignal notification error:', error.message);
+    throw error;
+  }
+}
+
+// Email notification function for web users
+async function sendEmailNotification(notificationData) {
+  try {
+    console.log('Sending email notification:', {
+      title: notificationData.title,
+      targetAll: notificationData.targetAll,
+      targetUsersCount: notificationData.targetUsers?.length || 0
+    });
+
+    // Get target users
+    let userEmails = [];
+    
+    if (notificationData.targetAll) {
+      // Get all active users from your database
+      // Replace 'User' with your actual user model
+      const users = await User.find({ isActive: true }).select('email');
+      userEmails = users.map(user => user.email);
+      console.log(`Found ${userEmails.length} active users for email notification`);
+    } else {
+      // Use specified users
+      userEmails = notificationData.targetUsers;
+    }
+
+    if (userEmails.length === 0) {
+      return {
+        success: true,
+        skipped: true,
+        reason: 'No users found for email notification'
+      };
+    }
+
+    // Send email to each user using your existing email system
+    for (const email of userEmails) {
+      try {
+        await sendSingleEmail({
+          to: email,
+          subject: notificationData.title,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2 style="color: #FF9900;">${notificationData.title}</h2>
+              <p style="font-size: 16px; line-height: 1.5;">${notificationData.message}</p>
+              ${notificationData.actionUrl ? `
+                <a href="${notificationData.actionUrl}" 
+                   style="display: inline-block; padding: 12px 24px; background: #FF9900; color: white; text-decoration: none; border-radius: 4px; margin-top: 16px;">
+                  View Details
+                </a>
+              ` : ''}
+              <hr style="margin: 24px 0; border: none; border-top: 1px solid #eee;">
+              <p style="color: #666; font-size: 14px;">
+                This is an automated notification from Joker Creation Studio.
+              </p>
+            </div>
+          `
+        });
+      } catch (emailError) {
+        console.error(`Failed to send email to ${email}:`, emailError.message);
+        // Continue with other emails even if one fails
+      }
+    }
+
+    return {
+      success: true,
+      emailsSent: userEmails.length,
+      target: notificationData.targetAll ? 'all_users' : 'specific_users'
+    };
+
+  } catch (error) {
+    console.error('Email notification error:', error.message);
+    throw error;
+  }
+}
+
+// Helper function for sending single email
+async function sendSingleEmail(emailData) {
+  try {
+    // Use your existing email sending endpoint
+    const response = await fetch(`${process.env.BOOKINGS_API_URL || 'http://localhost:3000'}/api/admin/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${bookingsAuthToken}`
+      },
+      body: JSON.stringify({
+        userEmails: [emailData.to],
+        subject: emailData.subject,
+        message: emailData.html,
+        isHtml: true
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Email API returned ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error('Error sending single email:', error);
+    throw error;
+  }
+}
+
+// Get user notifications (for users to view their notifications)
+async function getUserNotifications(userEmail, limit = 50) {
+  try {
+    const notifications = await Notification.find({
+      $and: [
+        {
+          $or: [
+            { targetAll: true },
+            { targetUsers: userEmail }
+          ]
+        },
+        { isSent: true }
+      ]
+    })
+    .sort({ createdAt: -1 })
+    .limit(limit);
+
+    return notifications;
+  } catch (error) {
+    console.error('Error fetching user notifications:', error);
+    throw error;
+  }
+}
+
+// Mark notification as read
+async function markAsRead(notificationId, userEmail) {
+  try {
+    await Notification.findByIdAndUpdate(
+      notificationId,
+      {
+        $addToSet: {
+          readBy: {
+            userEmail: userEmail,
+            readAt: new Date()
+          }
+        }
+      }
+    );
+  } catch (error) {
+    console.error('Error marking notification as read:', error);
+    throw error;
+  }
+}
+
+// Send combined notification (OneSignal + Email)
+async function sendCombinedNotification(notificationData) {
+  try {
+    // Save to database
+    const notification = await createNotification(notificationData);
+
+    // Send to OneSignal (for mobile app)
+    let oneSignalResult = null;
+    if (notificationData.targetAll) {
+      try {
+        oneSignalResult = await sendOneSignalNotification(notificationData);
+        notification.sentViaOneSignal = true;
+        notification.oneSignalId = oneSignalResult?.onesignalResponse?.id;
+      } catch (onesignalError) {
+        console.error('OneSignal notification failed:', onesignalError.message);
+        notification.sentViaOneSignal = false;
+      }
+    }
+
+    // Send email (for web users)
+    let emailResult = null;
+    try {
+      emailResult = await sendEmailNotification(notificationData);
+    } catch (emailError) {
+      console.error('Email notification failed:', emailError.message);
+    }
+
+    // Update notification in database
+    await notification.save();
+
+    return {
+      notification,
+      oneSignalResult,
+      emailResult
+    };
+  } catch (error) {
+    console.error('Error in sendCombinedNotification:', error);
+    throw error;
+  }
+}
 // OneSignal notification function - Use "All" segment
 async function sendOneSignalNotification(notificationData) {
   try {
@@ -1360,6 +1662,8 @@ async function markAsRead(notificationId, userEmail) {
     throw error;
   }
 }
+
+
 
 
 
@@ -7435,6 +7739,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
