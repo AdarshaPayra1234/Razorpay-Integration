@@ -30,7 +30,8 @@
     "node-cron": "^3.0.2",
     "nodemailer": "^6.9.7",
     "path": "^0.12.7",
-    "razorpay": "^2.9.2"
+    "razorpay": "^2.9.2",
+    "onesignal-node": "^5.0.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
