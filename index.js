@@ -1197,14 +1197,10 @@ async function deleteFromFreeimageHost(deleteUrl, imageId) {
 
 // Send notification via OneSignal
 // OneSignal notification function - Use "All" segment instead of "Subscribed Users"
+// OneSignal notification function - Use "All" segment
 async function sendOneSignalNotification(notificationData) {
   try {
-    console.log('Sending OneSignal notification:', {
-      title: notificationData.title,
-      message: notificationData.message,
-      targetAll: notificationData.targetAll,
-      targetUsersCount: notificationData.targetUsers?.length || 0
-    });
+    console.log('Sending OneSignal notification to mobile app users');
 
     // Check if OneSignal is configured
     if (!process.env.ONESIGNAL_APP_ID || !process.env.ONESIGNAL_API_KEY) {
@@ -1223,7 +1219,9 @@ async function sendOneSignalNotification(notificationData) {
         type: notificationData.type,
         actionUrl: notificationData.actionUrl,
         notificationType: notificationData.type
-      }
+      },
+      // Use "All" segment to send to all users
+      included_segments: ['All']
     };
 
     // Add optional fields
@@ -1234,22 +1232,6 @@ async function sendOneSignalNotification(notificationData) {
 
     if (notificationData.actionUrl) {
       notificationPayload.url = notificationData.actionUrl;
-    }
-
-    // Handle targeting - ONLY send to mobile app for "All Users"
-    if (notificationData.targetAll) {
-      // Send to ALL mobile app users - Use "All" segment instead of "Subscribed Users"
-      notificationPayload.included_segments = ['All'];
-      console.log('Targeting: ALL mobile app users (using "All" segment)');
-      
-    } else {
-      // Specific users selected - DO NOT send to mobile app
-      console.log('Specific users selected - skipping mobile app notification');
-      return {
-        success: true,
-        skipped: true,
-        reason: 'Specific user notifications not supported for mobile app'
-      };
     }
 
     console.log('OneSignal payload:', JSON.stringify(notificationPayload, null, 2));
@@ -1282,21 +1264,18 @@ async function sendOneSignalNotification(notificationData) {
       throw new Error(`OneSignal API error: ${response.status} - ${responseData.errors ? responseData.errors.join(', ') : 'Unknown error'}`);
     }
 
-    // Check if there are any errors in the response
+    // Handle response with warnings
     if (responseData.errors && responseData.errors.length > 0) {
-      console.log('OneSignal returned warnings:', responseData.errors);
+      console.log('OneSignal warnings:', responseData.errors);
       
-      // If it's just "no subscribers" warning, that's OK
-      if (responseData.errors.includes('All included players are not subscribed')) {
-        return {
-          success: true,
-          warning: 'Notification queued - will be delivered when users come online',
-          onesignalResponse: responseData
-        };
-      }
+      return {
+        success: true,
+        warning: `Notification processed with warnings: ${responseData.errors.join(', ')}`,
+        onesignalResponse: responseData
+      };
     }
 
-    console.log('OneSignal notification sent successfully to mobile app:', responseData);
+    console.log('OneSignal notification sent successfully:', responseData);
     return {
       success: true,
       onesignalResponse: responseData
@@ -6430,35 +6409,36 @@ app.post('/api/admin/notifications/send',
       }
 
       // Prepare response message
-      let message = scheduledFor ? 'Notification scheduled successfully' : 'Notification sent successfully';
-      const details = [];
+      // Prepare response message
+let responseMessage = scheduledFor ? 'Notification scheduled successfully' : 'Notification sent successfully';
+const details = [];
 
-      if (oneSignalResult) {
-        if (oneSignalResult.skipped) {
-          details.push('Mobile: Specific users not supported');
-        } else if (oneSignalResult.warning) {
-          details.push(`Mobile: ${oneSignalResult.warning}`);
-        } else {
-          details.push('Mobile: Sent to all app users');
-        }
-      }
+if (oneSignalResult) {
+    if (oneSignalResult.skipped) {
+        details.push('Mobile: Specific users not supported');
+    } else if (oneSignalResult.warning) {
+        details.push(`Mobile: ${oneSignalResult.warning}`);
+    } else {
+        details.push('Mobile: Sent to all app users');
+    }
+}
 
-      if (emailResult) {
-        if (notificationData.targetAll) {
-          details.push('Email: Sent to all users');
-        } else {
-          details.push(`Email: Sent to ${notificationData.targetUsers.length} users`);
-        }
-      }
+if (emailResult) {
+    if (notificationData.targetAll) {
+        details.push('Email: Sent to all users');
+    } else {
+        details.push(`Email: Sent to ${notificationData.targetUsers.length} users`);
+    }
+}
 
-      res.json({
-        success: true,
-        message: message,
-        details: details.join(' | '),
-        notification,
-        oneSignalResult,
-        emailResult
-      });
+res.json({
+    success: true,
+    message: responseMessage,
+    details: details.join(' | '),
+    notification,
+    oneSignalResult,
+    emailResult
+});
 
     } catch (error) {
       console.error('Error in notification send endpoint:', error);
@@ -7455,6 +7435,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
