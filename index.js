@@ -1196,8 +1196,7 @@ async function deleteFromFreeimageHost(deleteUrl, imageId) {
 // ==================== NOTIFICATION UTILITIES ====================
 
 // Send notification via OneSignal
-// Improved OneSignal notification function
-// OneSignal notification function for mobile app (All Users only)
+// OneSignal notification function - Use "All" segment instead of "Subscribed Users"
 async function sendOneSignalNotification(notificationData) {
   try {
     console.log('Sending OneSignal notification:', {
@@ -1239,9 +1238,9 @@ async function sendOneSignalNotification(notificationData) {
 
     // Handle targeting - ONLY send to mobile app for "All Users"
     if (notificationData.targetAll) {
-      // Send to ALL mobile app users
+      // Send to ALL mobile app users - Use "All" segment instead of "Subscribed Users"
       notificationPayload.included_segments = ['All'];
-      console.log('Targeting: ALL mobile app users');
+      console.log('Targeting: ALL mobile app users (using "All" segment)');
       
     } else {
       // Specific users selected - DO NOT send to mobile app
@@ -1280,17 +1279,21 @@ async function sendOneSignalNotification(notificationData) {
         body: responseData
       });
 
-      // Check if it's a "no subscribers" error - this is OK
-      if (responseData.errors && responseData.errors.includes('All included players are not subscribed')) {
-        console.log('No active subscribers found - notification queued for when users come online');
+      throw new Error(`OneSignal API error: ${response.status} - ${responseData.errors ? responseData.errors.join(', ') : 'Unknown error'}`);
+    }
+
+    // Check if there are any errors in the response
+    if (responseData.errors && responseData.errors.length > 0) {
+      console.log('OneSignal returned warnings:', responseData.errors);
+      
+      // If it's just "no subscribers" warning, that's OK
+      if (responseData.errors.includes('All included players are not subscribed')) {
         return {
           success: true,
-          warning: 'Notification queued for delivery when users come online',
+          warning: 'Notification queued - will be delivered when users come online',
           onesignalResponse: responseData
         };
       }
-
-      throw new Error(`OneSignal API error: ${response.status} - ${responseData.errors ? responseData.errors.join(', ') : 'Unknown error'}`);
     }
 
     console.log('OneSignal notification sent successfully to mobile app:', responseData);
@@ -1301,18 +1304,6 @@ async function sendOneSignalNotification(notificationData) {
 
   } catch (error) {
     console.error('OneSignal notification error:', error.message);
-    throw error;
-  }
-}
-
-// Create notification in database
-async function createNotification(notificationData) {
-  try {
-    const notification = new Notification(notificationData);
-    await notification.save();
-    return notification;
-  } catch (error) {
-    console.error('Error creating notification:', error);
     throw error;
   }
 }
@@ -7464,6 +7455,7 @@ initializeAdmin().then(() => {
   console.error('Failed to initialize admin:', err);
   process.exit(1);
 });
+
 
 
 
